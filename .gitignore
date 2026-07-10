@@ -1,0 +1,52 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode / build
+.build/
+build/
+DerivedData/
+*.xcuserstate
+*.xcuserdata/
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Archives / export artifacts
+*.xcarchive
+export/
+*.zip
+!docs/**/*.zip
+
+# Secrets / env (API keys live in Keychain; never commit these)
+.env
+.env.*
+secrets.json
+*.pem
+*.p12
+*.mobileprovision
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Swift Package Manager
+.swiftpm/
+Packages/
+Package.resolved
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Misc
+*.log
+.laputa/
