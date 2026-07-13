@@ -14,6 +14,16 @@ final class UpdateManager: ObservableObject {
     /// `https://updates.example.com/appcast.xml`
     static let defaultFeedURL = URL(string: "https://updates.flowdictate.app/appcast.xml")!
 
+    /// Max appcast body size (prevents memory blow-up from a malicious feed).
+    private static let maxFeedBytes = 512 * 1024
+
+    /// Hosts allowed for the feed and download enclosure.
+    private static let allowedHosts: Set<String> = [
+        "updates.flowdictate.app",
+        "flowdictate.app",
+        "www.flowdictate.app"
+    ]
+
     @Published private(set) var lastStatus = "Not checked"
     @Published private(set) var isChecking = false
     @Published private(set) var availableVersion: String?
@@ -32,6 +42,12 @@ final class UpdateManager: ObservableObject {
         downloadURL = nil
         defer { isChecking = false }
 
+        guard Self.isAllowedHTTPS(feedURL) else {
+            lastStatus = "Update feed URL is not allowed."
+            DiagnosticsLogger.shared.log("update: rejected feed URL host=\(feedURL.host ?? "?")")
+            return
+        }
+
         do {
             var request = URLRequest(url: feedURL)
             request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -39,6 +55,11 @@ final class UpdateManager: ObservableObject {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
                 lastStatus = "Update server returned HTTP \(http.statusCode)."
+                return
+            }
+            if data.count > Self.maxFeedBytes {
+                lastStatus = "Update feed is too large."
+                DiagnosticsLogger.shared.log("update: feed too large bytes=\(data.count)")
                 return
             }
 
@@ -51,10 +72,18 @@ final class UpdateManager: ObservableObject {
             let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
             if AppcastParser.compareVersions(best.sparkleVersion ?? best.titleVersion, current) == .orderedDescending {
                 availableVersion = best.sparkleVersion ?? best.titleVersion
-                downloadURL = best.enclosureURL
-                lastStatus = "Update \(availableVersion ?? "") available."
-                if openWhenAvailable, let downloadURL {
-                    NSWorkspace.shared.open(downloadURL)
+                if let url = best.enclosureURL, Self.isAllowedHTTPS(url) {
+                    downloadURL = url
+                    lastStatus = "Update \(availableVersion ?? "") available."
+                    if openWhenAvailable {
+                        NSWorkspace.shared.open(url)
+                    }
+                } else {
+                    downloadURL = nil
+                    lastStatus = "Update found but download URL is not allowed."
+                    DiagnosticsLogger.shared.log(
+                        "update: rejected enclosure url=\(best.enclosureURL?.absoluteString ?? "nil")"
+                    )
                 }
             } else {
                 lastStatus = "You’re up to date (\(current))."
@@ -67,9 +96,18 @@ final class UpdateManager: ObservableObject {
     }
 
     func openDownloadIfAvailable() {
-        if let downloadURL {
-            NSWorkspace.shared.open(downloadURL)
-        }
+        guard let downloadURL, Self.isAllowedHTTPS(downloadURL) else { return }
+        NSWorkspace.shared.open(downloadURL)
+    }
+
+    /// Only https URLs on the product update host (or its subdomains).
+    static func isAllowedHTTPS(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "https" else { return false }
+        guard let host = url.host?.lowercased(), !host.isEmpty else { return false }
+        if allowedHosts.contains(host) { return true }
+        // Allow subdomains of flowdictate.app
+        if host.hasSuffix(".flowdictate.app") { return true }
+        return false
     }
 }
 

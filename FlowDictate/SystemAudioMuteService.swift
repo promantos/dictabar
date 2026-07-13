@@ -3,13 +3,16 @@ import Foundation
 
 /// Mutes the default output device for the duration of microphone capture.
 /// Falls back to volume=0 when the device has no mute property.
+/// Persist restore state so a crash mid-mute can recover on next launch.
 enum SystemAudioMuteService {
     private static let lock = NSLock()
     // Protected by `lock`; marked unsafe for Swift 6 static mutable state rules.
     nonisolated(unsafe) private static var activeRestore: RestoreState?
 
-    private struct RestoreState {
-        let deviceID: AudioObjectID
+    private static let defaultsKey = "flowdictate.pendingAudioRestore"
+
+    private struct RestoreState: Codable {
+        let deviceID: UInt32
         let muted: UInt32?
         let volume: Float32?
     }
@@ -24,29 +27,41 @@ enum SystemAudioMuteService {
 
         let previousMute = muteValue(deviceID: deviceID)
         let previousVolume = volumeValue(deviceID: deviceID)
-        activeRestore = RestoreState(deviceID: deviceID, muted: previousMute, volume: previousVolume)
+        let state = RestoreState(deviceID: deviceID, muted: previousMute, volume: previousVolume)
+        activeRestore = state
+        persist(state)
 
         if setMuted(true, deviceID: deviceID) {
             return
         }
         // Fallback: pull volume to zero when mute is unsupported (Bluetooth, aggregate, etc.).
-        _ = setVolume(0, deviceID: deviceID)
+        if !setVolume(0, deviceID: deviceID) {
+            DiagnosticsLogger.shared.log("mute: failed to mute or zero volume on device \(deviceID)")
+        }
     }
 
     static func endMute() {
         lock.lock()
         defer { lock.unlock() }
-        guard let state = activeRestore else { return }
+        guard let state = activeRestore else {
+            // Still clear any stale persisted flag.
+            clearPersisted()
+            return
+        }
         activeRestore = nil
+        clearPersisted()
+        applyRestore(state)
+    }
 
-        if let muted = state.muted {
-            _ = setMuted(muted != 0, deviceID: state.deviceID)
-        } else {
-            _ = setMuted(false, deviceID: state.deviceID)
-        }
-        if let volume = state.volume {
-            _ = setVolume(volume, deviceID: state.deviceID)
-        }
+    /// Call on launch: if we crashed while muted, restore system audio.
+    static func recoverIfNeeded() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeRestore == nil else { return }
+        guard let state = loadPersisted() else { return }
+        DiagnosticsLogger.shared.log("mute: recovering system audio after unclean shutdown")
+        clearPersisted()
+        applyRestore(state)
     }
 
     /// Legacy helper used by older call sites.
@@ -55,6 +70,35 @@ enum SystemAudioMuteService {
         beginMute()
         defer { endMute() }
         return try await operation()
+    }
+
+    // MARK: - Persist
+
+    private static func persist(_ state: RestoreState) {
+        if let data = try? JSONEncoder().encode(state) {
+            UserDefaults.standard.set(data, forKey: defaultsKey)
+        }
+    }
+
+    private static func loadPersisted() -> RestoreState? {
+        guard let data = UserDefaults.standard.data(forKey: defaultsKey) else { return nil }
+        return try? JSONDecoder().decode(RestoreState.self, from: data)
+    }
+
+    private static func clearPersisted() {
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+    }
+
+    private static func applyRestore(_ state: RestoreState) {
+        let deviceID = AudioObjectID(state.deviceID)
+        if let muted = state.muted {
+            _ = setMuted(muted != 0, deviceID: deviceID)
+        } else {
+            _ = setMuted(false, deviceID: deviceID)
+        }
+        if let volume = state.volume {
+            _ = setVolume(volume, deviceID: deviceID)
+        }
     }
 
     // MARK: - HAL helpers

@@ -12,7 +12,12 @@ final class SettingsStore: ObservableObject {
         }
     }
     @Published var model: String { didSet { defaults.set(model, forKey: Self.modelKey(provider)); save() } }
-    @Published var baseURL: String { didSet { defaults.set(baseURL, forKey: Self.baseURLKey(provider)); save() } }
+    @Published var baseURL: String {
+        didSet {
+            defaults.set(baseURL, forKey: Self.baseURLKey(provider))
+            save()
+        }
+    }
     @Published var language: OutputLanguage { didSet { save() } }
     @Published var launchAtLogin: Bool { didSet { save() } }
     @Published var showMenuBarIcon: Bool { didSet { save() } }
@@ -143,7 +148,8 @@ final class SettingsStore: ObservableObject {
         ProviderSettings(
             provider: provider,
             model: model,
-            baseURL: baseURL,
+            // Always send a validated https URL to the network layer.
+            baseURL: provider.sanitizedBaseURL(baseURL),
             language: language,
             deepgramSmartFormat: deepgramSmartFormat,
             deepgramNumerals: deepgramNumerals,
@@ -195,9 +201,10 @@ final class SettingsStore: ObservableObject {
         model = provider.models.contains(savedModel) ? savedModel : provider.models[0]
         let savedBaseURL = defaults.string(forKey: Self.baseURLKey(provider)) ?? provider.defaultBaseURL
         let providerDefaults = SpeechProvider.allCases.map(\.defaultBaseURL)
-        baseURL = savedBaseURL.isEmpty || (providerDefaults.contains(savedBaseURL) && savedBaseURL != provider.defaultBaseURL)
+        let candidate = savedBaseURL.isEmpty || (providerDefaults.contains(savedBaseURL) && savedBaseURL != provider.defaultBaseURL)
             ? provider.defaultBaseURL
             : savedBaseURL
+        baseURL = provider.sanitizedBaseURL(candidate)
         defaults.set(baseURL, forKey: Self.baseURLKey(provider))
     }
 

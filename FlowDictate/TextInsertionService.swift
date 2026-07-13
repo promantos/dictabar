@@ -3,6 +3,14 @@ import Foundation
 
 @MainActor
 enum TextInsertionService {
+    /// Tracks an in-flight paste so cancel can still restore the previous clipboard.
+    private static var pendingRestore: PendingClipboardRestore?
+
+    private struct PendingClipboardRestore {
+        let transcript: String
+        let backup: PasteboardBackup
+    }
+
     static func insert(_ text: String, settings: SettingsStore) async throws {
         var output = text
         if settings.addTrailingSpace { output += " " }
@@ -21,6 +29,15 @@ enum TextInsertionService {
         case .typing:
             try type(output)
         }
+    }
+
+    /// Call when the dictation pipeline is cancelled so clipboard never leaks the transcript.
+    static func restoreClipboardIfNeeded() {
+        guard let pending = pendingRestore else { return }
+        pendingRestore = nil
+        let pb = NSPasteboard.general
+        removeTranscriptAndRestore(pb: pb, transcript: pending.transcript, backup: pending.backup, pass: 0)
+        DiagnosticsLogger.shared.log("clipboard: restored after cancel")
     }
 
     static func copy(_ text: String) {
@@ -45,6 +62,11 @@ enum TextInsertionService {
             "clipboard: backup types=\(backup.stringValue != nil ? "str" : "-") items=\(backup.items.count) empty=\(backup.isEmpty)"
         )
 
+        // Register restore target BEFORE mutating pasteboard so cancel is safe.
+        if restoreClipboard {
+            pendingRestore = PendingClipboardRestore(transcript: text, backup: backup)
+        }
+
         // --- put transcript + paste ---
         pb.clearContents()
         pb.setString(text, forType: .string)
@@ -55,15 +77,38 @@ enum TextInsertionService {
             return
         }
 
+        // Always restore even if the task is cancelled mid-sleep.
+        defer {
+            if pendingRestore != nil {
+                removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: 1)
+                pendingRestore = nil
+            }
+        }
+
         // Give the front app time to read pasteboard for ⌘V.
-        try await Task.sleep(for: .milliseconds(550))
+        // Use non-throwing sleep so CancellationError does not skip defer restore logic incorrectly;
+        // defer still runs on cancel, but we also restore immediately after a cancelled wait.
+        let slept = await sleepAllowingCancel(milliseconds: 550)
+        if !slept {
+            // Cancelled during wait — restore now (defer also covers this).
+            DiagnosticsLogger.shared.log("clipboard: cancelled during paste wait; restoring")
+            return
+        }
 
         // --- CRITICAL: remove transcript, restore old ---
         removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: 1)
+        // Mark first restore done; scrub loop may re-apply if target app re-writes pasteboard.
+        // Keep pendingRestore until scrub finishes so cancel mid-scrub still restores.
 
         // Keep scrubbing for ~2s in case the target app re-writes the pasteboard.
         for pass in 2...6 {
-            try await Task.sleep(for: .milliseconds(300))
+            let ok = await sleepAllowingCancel(milliseconds: 300)
+            if !ok {
+                DiagnosticsLogger.shared.log("clipboard: cancelled during scrub; restoring")
+                removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: pass)
+                pendingRestore = nil
+                return
+            }
             let current = pb.string(forType: .string) ?? ""
             if current == text || (!text.isEmpty && current == text.trimmingCharacters(in: .whitespacesAndNewlines)) {
                 removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: pass)
@@ -71,9 +116,23 @@ enum TextInsertionService {
                 // Partial / combined content — still scrub.
                 removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: pass)
             } else {
-                DiagnosticsLogger.shared.log("clipboard: scrub OK after pass \(pass - 1); now=\(current.prefix(40))")
+                // Do NOT log clipboard contents (may be passwords/tokens).
+                DiagnosticsLogger.shared.log(
+                    "clipboard: scrub OK after pass \(pass - 1); len=\(current.count)"
+                )
                 break
             }
+        }
+        pendingRestore = nil
+    }
+
+    /// Sleep that returns false on cancellation instead of throwing.
+    private static func sleepAllowingCancel(milliseconds: UInt64) async -> Bool {
+        do {
+            try await Task.sleep(for: .milliseconds(milliseconds))
+            return true
+        } catch {
+            return false
         }
     }
 
@@ -152,20 +211,30 @@ enum TextInsertionService {
         }
 
         func restore(to pb: NSPasteboard) {
-            if !items.isEmpty {
-                var objects: [NSPasteboardItem] = []
-                for map in items {
-                    let item = NSPasteboardItem()
-                    for (type, data) in map {
-                        item.setData(data, forType: NSPasteboard.PasteboardType(type))
-                    }
-                    objects.append(item)
-                }
-                if pb.writeObjects(objects) { return }
-            }
-            if let stringValue {
+            // Restore via setString/setData only (historical AppKit crash path avoided).
+            // Restore primary string when available; otherwise first item types via setData.
+            if let stringValue, !stringValue.isEmpty {
+                pb.clearContents()
                 pb.setString(stringValue, forType: .string)
+                // Also restore non-string types from the first item when present.
+                if let first = items.first {
+                    for (type, data) in first where type != NSPasteboard.PasteboardType.string.rawValue {
+                        _ = pb.setData(data, forType: NSPasteboard.PasteboardType(type))
+                    }
+                }
+                return
             }
+            if let first = items.first {
+                pb.clearContents()
+                var wrote = false
+                for (type, data) in first {
+                    if pb.setData(data, forType: NSPasteboard.PasteboardType(type)) {
+                        wrote = true
+                    }
+                }
+                if wrote { return }
+            }
+            pb.clearContents()
         }
     }
 

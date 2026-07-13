@@ -66,6 +66,8 @@ final class DictationController {
         maxRecordTask = nil
         pipelineTask?.cancel()
         pipelineTask = nil
+        // Restore previous clipboard if cancel hits during paste wait.
+        TextInsertionService.restoreClipboardIfNeeded()
         recorder.cancel()
         endMuteIfNeeded()
         removeCancelMonitor()
@@ -324,6 +326,7 @@ final class DictationController {
             appState.dictationState = .idle
             DiagnosticsLogger.shared.log("pipeline: success")
         } catch is CancellationError {
+            TextInsertionService.restoreClipboardIfNeeded()
             cleanup(activeAudioURL)
             cleanup(recordedURL)
             activeAudioURL = nil
@@ -334,6 +337,7 @@ final class DictationController {
             }
             DiagnosticsLogger.shared.log("pipeline: cancelled")
         } catch {
+            TextInsertionService.restoreClipboardIfNeeded()
             cleanup(activeAudioURL)
             cleanup(recordedURL)
             activeAudioURL = nil
@@ -373,17 +377,23 @@ final class DictationController {
             DiagnosticsLogger.shared.log("ensurePermissions ok")
             return true
         }
+        // Keep dedicated permission states (do not overwrite with generic .failed).
+        endMuteIfNeeded()
+        removeCancelMonitor()
+        let message = result.message ?? "Permissions are required before dictation."
+        appState.lastError = message
         if !PermissionCenter.shared.microphone.isGranted {
             appState.dictationState = .needsMicrophonePermission
         } else if !PermissionCenter.shared.accessibility.isGranted {
             appState.dictationState = .needsAccessibilityPermission
+        } else {
+            appState.dictationState = .failed(message)
         }
-        failMessage(result.message ?? "Permissions are required before dictation.")
         // Re-show permissions sheet only when mic/ax still missing (never auto-open Settings).
         if !PermissionCenter.shared.requiredReady {
             appState.reopenPermissionsOnboarding()
         }
-        DiagnosticsLogger.shared.log("ensurePermissions failed: \(result.message ?? "?")")
+        DiagnosticsLogger.shared.log("ensurePermissions failed: \(message)")
         return false
     }
 

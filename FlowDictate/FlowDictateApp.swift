@@ -45,6 +45,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         LocalSecretStore.warmCache()
         permissionCenter.refresh()
 
+        // Recover from crash mid-recording: stale audio files + stuck system mute.
+        AudioRecorder.cleanupStaleTempRecordings()
+        SystemAudioMuteService.recoverIfNeeded()
+
         // Auto-add FlowDictate to Input Monitoring list when modifier shortcuts need it.
         // Does not open Settings; user only flips the toggle once the app is listed.
         if settingsStore.shortcutPreset.needsInputMonitoring {

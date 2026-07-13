@@ -9,15 +9,41 @@ final class AudioRecorder {
     private var recorder: AVAudioRecorder?
     private var outputURL: URL?
     private var isRecording = false
+    /// System default input restored after recording when we temporarily switched devices.
+    private var previousDefaultInputUID: String?
+
+    /// Delete leftover FlowDictate-*.wav files from temp (e.g. after crash).
+    static func cleanupStaleTempRecordings() {
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory
+        guard let items = try? fm.contentsOfDirectory(
+            at: tmp,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        var removed = 0
+        for url in items {
+            let name = url.lastPathComponent
+            guard name.hasPrefix("FlowDictate-"), name.hasSuffix(".wav") else { continue }
+            try? fm.removeItem(at: url)
+            removed += 1
+        }
+        if removed > 0 {
+            DiagnosticsLogger.shared.log("audio: cleaned \(removed) stale temp recording(s)")
+        }
+    }
 
     func start(deviceID: String) async throws -> URL {
         if isRecording {
             cancel()
         }
 
-        // Prefer system default; optional device switch via Core Audio UID.
+        // Prefer system default; optional device switch via Core Audio UID — always restore later.
         if !deviceID.isEmpty {
+            previousDefaultInputUID = currentDefaultInputUID()
             setDefaultInputDeviceIfPossible(uniqueID: deviceID)
+        } else {
+            previousDefaultInputUID = nil
         }
 
         let url = FileManager.default.temporaryDirectory
@@ -39,16 +65,19 @@ final class AudioRecorder {
         do {
             recorder = try AVAudioRecorder(url: url, settings: settings)
         } catch {
+            restoreDefaultInputIfNeeded()
             DiagnosticsLogger.shared.log("audio: AVAudioRecorder init failed: \(error)")
             throw AudioRecorderError.cannotStart(error.localizedDescription)
         }
 
         recorder.isMeteringEnabled = false
         guard recorder.prepareToRecord() else {
+            restoreDefaultInputIfNeeded()
             DiagnosticsLogger.shared.log("audio: prepareToRecord failed path=\(url.path)")
             throw AudioRecorderError.cannotStart("prepareToRecord returned false")
         }
         guard recorder.record() else {
+            restoreDefaultInputIfNeeded()
             DiagnosticsLogger.shared.log("audio: record() returned false path=\(url.path)")
             throw AudioRecorderError.cannotStart("record() returned false — check microphone permission and input device")
         }
@@ -68,6 +97,7 @@ final class AudioRecorder {
         self.recorder = nil
         self.outputURL = nil
         self.isRecording = false
+        restoreDefaultInputIfNeeded()
 
         // Ensure file is flushed.
         try? await Task.sleep(for: .milliseconds(40))
@@ -91,10 +121,44 @@ final class AudioRecorder {
         recorder = nil
         outputURL = nil
         isRecording = false
+        restoreDefaultInputIfNeeded()
         DiagnosticsLogger.shared.log("audio: cancelled")
     }
 
     // MARK: - Optional input device selection
+
+    private func restoreDefaultInputIfNeeded() {
+        guard let uid = previousDefaultInputUID else { return }
+        previousDefaultInputUID = nil
+        setDefaultInputDeviceIfPossible(uniqueID: uid)
+        DiagnosticsLogger.shared.log("audio: restored previous default input")
+    }
+
+    private func currentDefaultInputUID() -> String? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        ) == noErr, deviceID != 0 else { return nil }
+
+        var uidAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var cfUID: Unmanaged<CFString>?
+        var uidSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let err = withUnsafeMutablePointer(to: &cfUID) { ptr in
+            AudioObjectGetPropertyData(deviceID, &uidAddress, 0, nil, &uidSize, ptr)
+        }
+        guard err == noErr, let uid = cfUID?.takeUnretainedValue() as String? else { return nil }
+        return uid
+    }
 
     private func setDefaultInputDeviceIfPossible(uniqueID: String) {
         guard let deviceID = coreAudioDeviceID(uniqueID: uniqueID) else {

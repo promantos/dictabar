@@ -67,7 +67,8 @@ struct CustomOpenAICompatibleProvider: TranscriptionProvider {
 private struct OpenAICompatibleTranscriptionProvider: TranscriptionProvider {
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
-        guard let url = URL(string: settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/audio/transcriptions") else {
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let url = URL(string: base + "/audio/transcriptions") else {
             throw ProviderError.badURL
         }
 
@@ -156,7 +157,8 @@ struct SonioxTranscriptionProvider: TranscriptionProvider {
 struct GladiaTranscriptionProvider: TranscriptionProvider {
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
-        guard let uploadURL = URL(string: settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/upload") else { throw ProviderError.badURL }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let uploadURL = URL(string: base + "/upload") else { throw ProviderError.badURL }
 
         var form = MultipartFormData()
         try form.addFile("audio", url: audioURL, mimeType: "audio/wav")
@@ -170,7 +172,7 @@ struct GladiaTranscriptionProvider: TranscriptionProvider {
 
         let uploaded = try await send(upload)
         guard let audioURLString = uploaded["audio_url"] as? String else { throw ProviderError.noTranscript }
-        guard let initURL = URL(string: settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/pre-recorded") else { throw ProviderError.badURL }
+        guard let initURL = URL(string: base + "/pre-recorded") else { throw ProviderError.badURL }
 
         var body: [String: Any] = [
             "audio_url": audioURLString,
@@ -190,16 +192,28 @@ struct GladiaTranscriptionProvider: TranscriptionProvider {
         start.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let job = try await send(start)
-        guard let resultURL = (job["result_url"] as? String).flatMap(URL.init(string:)) else { throw ProviderError.noTranscript }
-        for _ in 0..<30 {
+        guard let resultURL = (job["result_url"] as? String).flatMap(URL.init(string:)),
+              Network.isTrustedResultURL(resultURL, for: settings.provider, baseURL: base) else {
+            throw ProviderError.badURL
+        }
+        // Align with pipeline timeout (~70s headroom under 75s resource limit).
+        for _ in 0..<60 {
             try await Task.sleep(for: .seconds(1))
             var poll = URLRequest(url: resultURL)
             poll.setValue(apiKey, forHTTPHeaderField: "x-gladia-key")
             let result = try await send(poll)
-            if let status = result["status"] as? String, status == "done" {
-                let text = (((result["result"] as? [String: Any])?["transcription"] as? [String: Any])?["full_transcript"] as? String)
-                guard let text, !text.isEmpty else { throw ProviderError.noTranscript }
-                return TranscriptionResult(text: text, detectedLanguage: nil, duration: nil, providerName: settings.provider.rawValue, modelName: settings.model)
+            if let status = result["status"] as? String {
+                if status == "done" {
+                    let text = (((result["result"] as? [String: Any])?["transcription"] as? [String: Any])?["full_transcript"] as? String)
+                    guard let text, !text.isEmpty else { throw ProviderError.noTranscript }
+                    return TranscriptionResult(text: text, detectedLanguage: nil, duration: nil, providerName: settings.provider.rawValue, modelName: settings.model)
+                }
+                if status == "error" || status == "failed" {
+                    let msg = (result["error"] as? [String: Any])?["message"] as? String
+                        ?? result["error_code"] as? String
+                        ?? "Gladia transcription failed."
+                    throw ProviderError.http(422, msg)
+                }
             }
         }
         throw ProviderError.http(408, "Gladia transcription timed out.")
@@ -209,7 +223,8 @@ struct GladiaTranscriptionProvider: TranscriptionProvider {
 struct SpeechmaticsTranscriptionProvider: TranscriptionProvider {
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
-        guard let url = URL(string: settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/jobs") else { throw ProviderError.badURL }
+        let speechmaticsBase = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let url = URL(string: speechmaticsBase + "/jobs") else { throw ProviderError.badURL }
 
         let config: [String: Any] = [
             "type": "transcription",
@@ -232,20 +247,28 @@ struct SpeechmaticsTranscriptionProvider: TranscriptionProvider {
 
         let job = try await send(request)
         guard let id = job["id"] as? String else { throw ProviderError.noTranscript }
-        guard let transcriptURL = URL(string: settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/jobs/\(id)/transcript?format=txt") else { throw ProviderError.badURL }
-        for _ in 0..<30 {
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let transcriptURL = URL(string: base + "/jobs/\(id)/transcript?format=txt") else { throw ProviderError.badURL }
+        for _ in 0..<55 {
             try await Task.sleep(for: .seconds(1))
             var poll = URLRequest(url: transcriptURL)
             poll.timeoutInterval = 60
             poll.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-            let (data, response) = try await URLSession.shared.data(for: poll)
+            try Task.checkCancellation()
+            let (data, response) = try await Network.session.data(for: poll)
+            try Task.checkCancellation()
+            if data.count > Network.maxResponseBytes {
+                throw ProviderError.http(413, "Provider response too large.")
+            }
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             if status == 200 {
                 let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { throw ProviderError.noTranscript }
                 return TranscriptionResult(text: text, detectedLanguage: settings.language.apiCode, duration: nil, providerName: settings.provider.rawValue, modelName: settings.model)
             }
-            if status != 202 && status != 404 { throw ProviderError.http(status, String(decoding: data.prefix(800), as: UTF8.self)) }
+            if status != 202 && status != 404 {
+                throw ProviderError.http(status, DiagnosticsLogger.safeErrorBody(data))
+            }
         }
         throw ProviderError.http(408, "Speechmatics transcription timed out.")
     }
@@ -346,7 +369,8 @@ struct AssemblyAITranscriptionProvider: TranscriptionProvider {
         guard let id = created["id"] as? String else { throw ProviderError.noTranscript }
         guard let pollURL = URL(string: base + "/v2/transcript/\(id)") else { throw ProviderError.badURL }
 
-        for _ in 0..<90 {
+        // Keep under pipeline 75s + session resource timeout.
+        for _ in 0..<55 {
             try await Task.sleep(for: .seconds(1))
             var poll = URLRequest(url: pollURL)
             poll.setValue(apiKey, forHTTPHeaderField: "authorization")
@@ -574,15 +598,64 @@ struct TogetherTranscriptionProvider: TranscriptionProvider {
     }
 }
 
-/// Shared session with bounded timeouts so a stuck network never freezes the UI forever.
+/// Shared session with bounded timeouts, no cross-origin redirects, and response size caps.
 private enum Network {
+    /// Refuse redirects that change host (prevents leaking API keys + POST body to a 3rd party).
+    private final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            guard let original = task.originalRequest?.url,
+                  let next = request.url,
+                  let fromHost = original.host?.lowercased(),
+                  let toHost = next.host?.lowercased(),
+                  fromHost == toHost,
+                  next.scheme?.lowercased() == "https" else {
+                DiagnosticsLogger.shared.log(
+                    "network: blocked redirect \(task.originalRequest?.url?.host ?? "?") → \(request.url?.host ?? "?")"
+                )
+                completionHandler(nil)
+                return
+            }
+            // Strip non-standard auth headers on redirect within same host still OK;
+            // cross-host already blocked. Keep Authorization only for same host.
+            completionHandler(request)
+        }
+    }
+
+    private static let redirectGuard = RedirectGuard()
+
     static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 75
         config.waitsForConnectivity = false
-        return URLSession(configuration: config)
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        return URLSession(configuration: config, delegate: redirectGuard, delegateQueue: nil)
     }()
+
+    static let maxResponseBytes = 2 * 1024 * 1024
+
+    /// Validate provider poll/result URLs stay on an allowed host for that provider.
+    static func isTrustedResultURL(_ url: URL, for provider: SpeechProvider, baseURL: String) -> Bool {
+        guard url.scheme?.lowercased() == "https",
+              let host = url.host?.lowercased(),
+              !host.isEmpty else { return false }
+        let suffixes = provider.allowedHostSuffixes
+        if suffixes.isEmpty {
+            // Custom: same host as configured base URL only.
+            if let baseHost = URL(string: baseURL)?.host?.lowercased() {
+                return host == baseHost
+            }
+            return false
+        }
+        return suffixes.contains { host == $0 || host.hasSuffix(".\($0)") }
+    }
 }
 
 private func send(_ request: URLRequest) async throws -> [String: Any] {
@@ -590,12 +663,21 @@ private func send(_ request: URLRequest) async throws -> [String: Any] {
     if request.timeoutInterval <= 0 || request.timeoutInterval > 90 {
         request.timeoutInterval = 60
     }
+    // Enforce https on every request URL.
+    guard let url = request.url,
+          url.scheme?.lowercased() == "https",
+          url.host != nil else {
+        throw ProviderError.badURL
+    }
     try Task.checkCancellation()
     let (data, response) = try await Network.session.data(for: request)
     try Task.checkCancellation()
+    if data.count > Network.maxResponseBytes {
+        throw ProviderError.http(413, "Provider response too large (\(data.count) bytes).")
+    }
     let status = (response as? HTTPURLResponse)?.statusCode ?? 0
     guard (200..<300).contains(status) else {
-        throw ProviderError.http(status, String(decoding: data.prefix(800), as: UTF8.self))
+        throw ProviderError.http(status, DiagnosticsLogger.safeErrorBody(data))
     }
     let object = try JSONSerialization.jsonObject(with: data)
     return object as? [String: Any] ?? [:]

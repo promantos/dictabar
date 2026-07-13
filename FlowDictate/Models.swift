@@ -61,6 +61,58 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Host suffixes allowed for this provider's base URL (empty = any https host for custom).
+    var allowedHostSuffixes: [String] {
+        switch self {
+        case .openAI: ["openai.com"]
+        case .groq: ["groq.com"]
+        case .deepgram: ["deepgram.com"]
+        case .mistral: ["mistral.ai"]
+        case .soniox: ["soniox.com"]
+        case .gladia: ["gladia.io"]
+        case .speechmatics: ["speechmatics.com"]
+        case .elevenLabs: ["elevenlabs.io"]
+        case .assemblyAI: ["assemblyai.com"]
+        case .openRouter: ["openrouter.ai"]
+        // Azure regional hosts: *.api.cognitive.microsoft.com / *.cognitiveservices.azure.com
+        case .azureSpeech: ["api.cognitive.microsoft.com", "cognitiveservices.azure.com"]
+        case .googleCloud: ["googleapis.com"]
+        case .fireworks: ["fireworks.ai"]
+        case .together: ["together.xyz", "together.ai"]
+        case .custom: [] // any https
+        }
+    }
+
+    /// Normalize and validate a user-supplied base URL. Returns default on failure.
+    func sanitizedBaseURL(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "https",
+              let host = url.host?.lowercased(),
+              !host.isEmpty else {
+            return defaultBaseURL
+        }
+        let suffixes = allowedHostSuffixes
+        if !suffixes.isEmpty {
+            let ok = suffixes.contains { host == $0 || host.hasSuffix(".\($0)") }
+            if !ok { return defaultBaseURL }
+        }
+        // Rebuild without userinfo/query/fragment to avoid odd embeddings.
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = host
+        components.port = url.port
+        components.path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).isEmpty
+            ? ""
+            : "/" + url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if let rebuilt = components.url?.absoluteString {
+            return rebuilt.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        return defaultBaseURL
+    }
+
     /// Shown under Base URL in Providers when non-empty.
     var baseURLHint: String? {
         switch self {
@@ -68,6 +120,8 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
             "Use your Speech resource host, e.g. https://westeurope.api.cognitive.microsoft.com"
         case .googleCloud:
             "API key goes in the key field (query param). Default host is fine for most users."
+        case .custom:
+            "HTTPS only. API key and audio are sent to this host."
         case .openRouter, .fireworks, .together, .assemblyAI:
             nil
         default:
