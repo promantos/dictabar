@@ -9,6 +9,8 @@ struct SettingsView: View {
     @ObservedObject private var permissionCenter = PermissionCenter.shared
 
     @State private var keySavedFlash = false
+    @State private var showingLanguages = false
+    @State private var languageSearch = ""
     /// Forces full tree refresh when UI language changes.
     @State private var langToken = UUID()
 
@@ -41,10 +43,10 @@ struct SettingsView: View {
                     content
                 }
                 .padding(24)
-                .frame(maxWidth: 680, alignment: .leading)
+                .frame(maxWidth: 760, alignment: .leading)
             }
         }
-        .frame(width: 900, height: 650)
+        .frame(width: 1020, height: 720)
         .id(langToken)
         .background(ShortcutCapture(isRecording: Binding(
             get: { appState.recordingShortcut },
@@ -208,44 +210,117 @@ struct SettingsView: View {
     }
 
     private var providers: some View {
-        SettingsCard {
-            Picker(L10n.t("prov.provider"), selection: $settingsStore.provider) {
-                ForEach(SpeechProvider.allCases) { Text($0.rawValue).tag($0) }
+        VStack(alignment: .leading, spacing: 14) {
+            SettingsCard {
+                HStack(alignment: .top, spacing: 14) {
+                    Image(systemName: "waveform.badge.magnifyingglass")
+                        .font(.system(size: 30, weight: .medium))
+                        .foregroundStyle(.tint)
+                        .frame(width: 44, height: 44)
+                        .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                    VStack(alignment: .leading, spacing: 7) {
+                        Text(settingsStore.provider.rawValue)
+                            .font(.title2.weight(.semibold))
+                        Text(settingsStore.provider.summary)
+                            .foregroundStyle(.secondary)
+                        HStack(spacing: 7) {
+                            ProviderBadge(settingsStore.provider.setupLabel, color: .blue)
+                            ProviderBadge(
+                                settingsStore.provider.freeTier,
+                                color: settingsStore.provider.freeTier == "Paid" ? .secondary : .green
+                            )
+                        }
+                    }
+                    Spacer()
+                    Link(destination: settingsStore.provider.keyURL) {
+                        Label(L10n.t("prov.getKey"), systemImage: "arrow.up.right.square")
+                    }
+                }
             }
-            Picker(L10n.t("prov.model"), selection: $settingsStore.model) {
-                ForEach(settingsStore.provider.models, id: \.self) { Text($0).tag($0) }
+
+            SettingsCard(L10n.t("prov.connection")) {
+                Picker(L10n.t("prov.provider"), selection: $settingsStore.provider) {
+                    ForEach(ProviderGroup.allCases) { group in
+                        Section(group.rawValue) {
+                            ForEach(SpeechProvider.allCases.filter { $0.group == group }) {
+                                Text($0.rawValue).tag($0)
+                            }
+                        }
+                    }
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Picker(L10n.t("prov.model"), selection: $settingsStore.model) {
+                        ForEach(settingsStore.provider.models, id: \.self) { Text($0).tag($0) }
+                    }
+                    .frame(maxWidth: .infinity)
+                    Button {
+                        languageSearch = ""
+                        showingLanguages.toggle()
+                    } label: {
+                        Label(
+                            L10n.tf("prov.languagesCount", selectedModelInfo.languageCodes.count),
+                            systemImage: "globe"
+                        )
+                    }
+                    .popover(isPresented: $showingLanguages, arrowEdge: .bottom) {
+                        LanguagePopover(model: selectedModelInfo, search: $languageSearch)
+                    }
+                }
+                if let note = selectedModelInfo.note {
+                    Text(note).font(.footnote).foregroundStyle(.secondary)
+                }
+                if let code = settingsStore.language.apiCode,
+                   !selectedModelInfo.languageCodes.contains(code) {
+                    Label(L10n.t("prov.languageWarning"), systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
+                Divider()
+                TextField(L10n.t("prov.baseURL"), text: $settingsStore.baseURL)
+                    .textFieldStyle(.roundedBorder)
+                if let hint = settingsStore.provider.baseURLHint {
+                    Text(hint)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                SecureField(L10n.t("prov.apiKey"), text: $settingsStore.apiKey)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { saveKey() }
+                HStack {
+                    Button(L10n.t("prov.save")) { saveKey() }
+                        .keyboardShortcut(.defaultAction)
+                    Button(L10n.t("prov.reload")) { settingsStore.loadAPIKey() }
+                    Button(L10n.t("prov.clear"), role: .destructive) { settingsStore.clearAPIKey() }
+                    Spacer()
+                    Label(
+                        settingsStore.apiKey.isEmpty
+                            ? L10n.t("prov.notConfigured")
+                            : (keySavedFlash ? L10n.t("prov.saved") : L10n.t("prov.ready")),
+                        systemImage: settingsStore.apiKey.isEmpty ? "circle.dashed" : "checkmark.circle.fill"
+                    )
+                    .foregroundStyle(settingsStore.apiKey.isEmpty ? .orange : .green)
+                }
             }
-            TextField(L10n.t("prov.baseURL"), text: $settingsStore.baseURL)
-            if let hint = settingsStore.provider.baseURLHint {
-                Text(hint)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            SecureField(L10n.t("prov.apiKey"), text: $settingsStore.apiKey)
-                .onSubmit { saveKey() }
-            HStack {
-                Button(L10n.t("prov.save")) { saveKey() }
-                    .keyboardShortcut(.defaultAction)
-                Button(L10n.t("prov.reload")) { settingsStore.loadAPIKey() }
-                Button(L10n.t("prov.clear"), role: .destructive) { settingsStore.clearAPIKey() }
-            }
-            Text(settingsStore.apiKey.isEmpty
-                ? L10n.t("prov.notConfigured")
-                : (keySavedFlash ? L10n.t("prov.saved") : L10n.t("prov.ready")))
-                .foregroundStyle(settingsStore.apiKey.isEmpty ? .orange : .green)
 
             if settingsStore.provider == .deepgram {
-                Divider()
-                Toggle(L10n.t("prov.smartFmt"), isOn: $settingsStore.deepgramSmartFormat)
-                Toggle(L10n.t("prov.numerals"), isOn: $settingsStore.deepgramNumerals)
-                Toggle(L10n.t("prov.punct"), isOn: $settingsStore.deepgramPunctuation)
+                SettingsCard(L10n.t("prov.options")) {
+                    Toggle(L10n.t("prov.smartFmt"), isOn: $settingsStore.deepgramSmartFormat)
+                    Toggle(L10n.t("prov.numerals"), isOn: $settingsStore.deepgramNumerals)
+                    Toggle(L10n.t("prov.punct"), isOn: $settingsStore.deepgramPunctuation)
+                }
             }
             if settingsStore.provider == .gladia {
-                Divider()
-                Toggle(L10n.t("prov.codeSwitch"), isOn: $settingsStore.gladiaCodeSwitching)
-                Toggle(L10n.t("prov.enhPunct"), isOn: $settingsStore.punctuation)
+                SettingsCard(L10n.t("prov.options")) {
+                    Toggle(L10n.t("prov.codeSwitch"), isOn: $settingsStore.gladiaCodeSwitching)
+                    Toggle(L10n.t("prov.enhPunct"), isOn: $settingsStore.punctuation)
+                }
             }
         }
+    }
+
+    private var selectedModelInfo: SpeechModelInfo {
+        settingsStore.provider.modelInfos.first { $0.id == settingsStore.model }
+            ?? settingsStore.provider.modelInfos[0]
     }
 
     private var permissions: some View {
@@ -333,6 +408,75 @@ private struct SettingsCard<Content: View>: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+        .modifier(AdaptiveGlassCard())
+    }
+}
+
+private struct AdaptiveGlassCard: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect()
+        } else {
+            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+}
+
+private struct ProviderBadge: View {
+    let title: String
+    let color: Color
+
+    init(_ title: String, color: Color) {
+        self.title = title
+        self.color = color
+    }
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.12), in: Capsule())
+    }
+}
+
+private struct LanguagePopover: View {
+    let model: SpeechModelInfo
+    @Binding var search: String
+
+    private var languages: [String] {
+        guard !search.isEmpty else { return model.languageNames }
+        return model.languageNames.filter { $0.localizedCaseInsensitiveContains(search) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L10n.t("prov.supportedLanguages"))
+                    .font(.headline)
+                Text(model.id)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            TextField(L10n.t("prov.searchLanguages"), text: $search)
+                .textFieldStyle(.roundedBorder)
+            ScrollView {
+                LazyVGrid(columns: [
+                    GridItem(.flexible(), alignment: .leading),
+                    GridItem(.flexible(), alignment: .leading)
+                ], alignment: .leading, spacing: 8) {
+                    ForEach(languages, id: \.self) { language in
+                        Label(language, systemImage: "checkmark")
+                            .font(.callout)
+                            .foregroundStyle(.primary)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+        .padding(16)
+        .frame(width: 430, height: 390)
     }
 }

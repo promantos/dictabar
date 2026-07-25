@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum ProviderError: LocalizedError {
@@ -36,6 +37,16 @@ enum ProviderRegistry {
         case .googleCloud: GoogleCloudSTTTranscriptionProvider()
         case .fireworks: FireworksTranscriptionProvider()
         case .together: TogetherTranscriptionProvider()
+        case .smallestAI: SmallestAITranscriptionProvider()
+        case .alibaba: AlibabaTranscriptionProvider()
+        case .xAI: XAITranscriptionProvider()
+        case .amazonTranscribe: AmazonTranscribeProvider()
+        case .inworld: InworldTranscriptionProvider()
+        case .cartesia: CartesiaTranscriptionProvider()
+        case .gradium: GradiumTranscriptionProvider()
+        case .modulate: ModulateTranscriptionProvider()
+        case .cohere: CohereTranscriptionProvider()
+        case .cloudflare: CloudflareTranscriptionProvider()
         }
     }
 }
@@ -442,14 +453,14 @@ struct AzureSpeechTranscriptionProvider: TranscriptionProvider {
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
         let base = settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: base + "/speechtotext/transcriptions:transcribe?api-version=2024-11-15") else {
+        guard let url = URL(string: base + "/speechtotext/transcriptions:transcribe?api-version=2025-10-15") else {
             throw ProviderError.badURL
         }
 
         let locale = settings.language == .auto ? "en-US" : settings.language.bcp47
-        let definition: [String: Any] = [
-            "locales": [locale]
-        ]
+        let definition: [String: Any] = settings.model.hasPrefix("mai-transcribe")
+            ? ["enhancedMode": ["enabled": true, "model": settings.model]]
+            : ["locales": [locale]]
         let definitionJSON = String(data: try JSONSerialization.data(withJSONObject: definition), encoding: .utf8) ?? "{\"locales\":[\"en-US\"]}"
 
         var form = MultipartFormData()
@@ -598,6 +609,433 @@ struct TogetherTranscriptionProvider: TranscriptionProvider {
     }
 }
 
+// MARK: - New file/batch providers
+
+struct SmallestAITranscriptionProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard var components = URLComponents(string: base + "/stt/") else { throw ProviderError.badURL }
+        let language = settings.model == "pulse-pro" ? "en" : (settings.language.apiCode ?? "multi-eu")
+        components.queryItems = [
+            URLQueryItem(name: "model", value: settings.model),
+            URLQueryItem(name: "language", value: language)
+        ]
+        guard let url = components.url else { throw ProviderError.badURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try Data(contentsOf: audioURL)
+        let json = try await send(request)
+        guard let text = json["transcription"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
+        return result(text, settings, language: language)
+    }
+}
+
+struct AlibabaTranscriptionProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let url = URL(string: base + "/api/v1/services/aigc/multimodal-generation/generation") else {
+            throw ProviderError.badURL
+        }
+        let encoded = try Data(contentsOf: audioURL).base64EncodedString()
+        var options: [String: Any] = ["enable_itn": true]
+        if let language = settings.language.apiCode { options["language"] = language }
+        let body: [String: Any] = [
+            "model": settings.model,
+            "input": ["messages": [[
+                "role": "user",
+                "content": [["audio": "data:audio/wav;base64,\(encoded)"]]
+            ]]],
+            "parameters": ["asr_options": options]
+        ]
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let json = try await send(request)
+        let output = json["output"] as? [String: Any]
+        let choices = output?["choices"] as? [[String: Any]]
+        let message = choices?.first?["message"] as? [String: Any]
+        let content = message?["content"] as? [[String: Any]]
+        let text = content?.compactMap { $0["text"] as? String }.joined(separator: " ")
+            ?? output?["text"] as? String
+        guard let text, !text.isEmpty else { throw ProviderError.noTranscript }
+        return result(text, settings, language: settings.language.apiCode)
+    }
+}
+
+struct XAITranscriptionProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let url = URL(string: base + "/stt") else { throw ProviderError.badURL }
+        var form = MultipartFormData()
+        form.addField("format", "true")
+        if let language = settings.language.apiCode { form.addField("language", language) }
+        try form.addFile("file", url: audioURL, mimeType: "audio/wav")
+        form.close()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = form.data
+        let json = try await send(request)
+        guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
+        return result(text, settings, language: json["language"] as? String, duration: json["duration"] as? Double)
+    }
+}
+
+struct InworldTranscriptionProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let url = URL(string: base + "/stt/v1/transcribe") else { throw ProviderError.badURL }
+        let audio = try Data(contentsOf: audioURL).base64EncodedString()
+        var config: [String: Any] = [
+            "modelId": settings.model,
+            "audioEncoding": "LINEAR16",
+            "sampleRateHertz": 16_000,
+            "numberOfChannels": 1
+        ]
+        if settings.language != .auto { config["language"] = settings.language.bcp47 }
+        let body: [String: Any] = [
+            "transcribeConfig": config,
+            "audioData": ["content": audio]
+        ]
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Basic \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let json = try await send(request)
+        let text = (json["transcription"] as? [String: Any])?["transcript"] as? String
+        guard let text, !text.isEmpty else { throw ProviderError.noTranscript }
+        return result(text, settings, language: settings.language.apiCode)
+    }
+}
+
+struct CartesiaTranscriptionProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let url = URL(string: base + "/stt") else { throw ProviderError.badURL }
+        var form = MultipartFormData()
+        form.addField("model", settings.model)
+        if let language = settings.language.apiCode { form.addField("language", language) }
+        try form.addFile("file", url: audioURL, mimeType: "audio/wav")
+        form.close()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("2026-03-01", forHTTPHeaderField: "Cartesia-Version")
+        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = form.data
+        let json = try await send(request)
+        guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
+        return result(text, settings, language: json["language"] as? String, duration: json["duration"] as? Double)
+    }
+}
+
+struct GradiumTranscriptionProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard var components = URLComponents(string: base + "/post/speech/asr") else { throw ProviderError.badURL }
+        var query = [URLQueryItem(name: "model", value: settings.model)]
+        if let language = settings.language.apiCode {
+            let config = String(data: try JSONSerialization.data(withJSONObject: ["language": language]), encoding: .utf8)
+            query.append(URLQueryItem(name: "json_config", value: config))
+        }
+        components.queryItems = query
+        guard let url = components.url else { throw ProviderError.badURL }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try Data(contentsOf: audioURL)
+        let data = try await sendData(request)
+        let text = String(decoding: data, as: UTF8.self)
+            .split(whereSeparator: \.isNewline)
+            .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            .filter { ($0["type"] as? String) == "text" }
+            .compactMap { $0["text"] as? String }
+            .joined(separator: " ")
+        guard !text.isEmpty else { throw ProviderError.noTranscript }
+        return result(text, settings, language: settings.language.apiCode)
+    }
+}
+
+struct ModulateTranscriptionProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let url = URL(string: base + "/velma-2-stt-batch") else { throw ProviderError.badURL }
+        var form = MultipartFormData()
+        form.addField("speaker_diarization", "false")
+        try form.addFile("upload_file", url: audioURL, mimeType: "audio/wav")
+        form.close()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
+        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = form.data
+        let json = try await send(request)
+        guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
+        return result(text, settings, duration: (json["duration_ms"] as? Double).map { $0 / 1000 })
+    }
+}
+
+struct CohereTranscriptionProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let url = URL(string: base + "/audio/transcriptions") else { throw ProviderError.badURL }
+        var form = MultipartFormData()
+        form.addField("model", settings.model)
+        // Cohere currently requires a language even though FlowDictate can auto-detect elsewhere.
+        form.addField("language", settings.language.apiCode ?? "en")
+        try form.addFile("file", url: audioURL, mimeType: "audio/wav")
+        form.close()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = form.data
+        let json = try await send(request)
+        guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
+        return result(text, settings, language: settings.language.apiCode)
+    }
+}
+
+struct CloudflareTranscriptionProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard !base.contains("ACCOUNT_ID"), let url = URL(string: base + "/\(settings.model)") else {
+            throw ProviderError.unsupported("Replace ACCOUNT_ID in the Cloudflare Base URL.")
+        }
+        var body: [String: Any] = [
+            "audio": try Data(contentsOf: audioURL).base64EncodedString(),
+            "task": "transcribe"
+        ]
+        if let language = settings.language.apiCode { body["language"] = language }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let json = try await send(request)
+        let payload = json["result"] as? [String: Any]
+        let text = payload?["text"] as? String
+            ?? (payload?["transcription_info"] as? [String: Any])?["text"] as? String
+        guard let text, !text.isEmpty else { throw ProviderError.noTranscript }
+        return result(text, settings, language: settings.language.apiCode)
+    }
+}
+
+// MARK: - Amazon Transcribe batch (temporary S3 object + SigV4)
+
+struct AmazonTranscribeProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        let credentials = apiKey.split(separator: ":", maxSplits: 1).map(String.init)
+        guard credentials.count == 2, !credentials[0].isEmpty, !credentials[1].isEmpty else {
+            throw ProviderError.unsupported("Enter AWS credentials as ACCESS_KEY_ID:SECRET_ACCESS_KEY.")
+        }
+        guard let configured = URL(string: settings.provider.sanitizedBaseURL(settings.baseURL)),
+              let host = configured.host,
+              let region = host.split(separator: ".").dropFirst().first.map(String.init),
+              region != "amazonaws",
+              let bucket = configured.path.split(separator: "/").first.map(String.init),
+              bucket != "your-s3-bucket" else {
+            throw ProviderError.unsupported("Append your S3 bucket to the regional Amazon Transcribe Base URL.")
+        }
+
+        let objectKey = "flowdictate/\(UUID().uuidString).wav"
+        let s3Host = "s3.\(region).amazonaws.com"
+        let s3Path = "/\(bucket)/\(objectKey)"
+        guard let s3URL = URL(string: "https://\(s3Host)\(s3Path)"),
+              let transcribeURL = URL(string: "https://transcribe.\(region).amazonaws.com/") else {
+            throw ProviderError.badURL
+        }
+        let signer = AWSSigner(accessKey: credentials[0], secretKey: credentials[1], region: region)
+        let audio = try Data(contentsOf: audioURL)
+
+        var upload = URLRequest(url: s3URL)
+        upload.httpMethod = "PUT"
+        upload.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
+        upload.httpBody = audio
+        signer.sign(&upload, service: "s3", body: audio)
+        _ = try await sendData(upload)
+
+        let jobName = "flowdictate-\(UUID().uuidString.lowercased())"
+        var startBody: [String: Any] = [
+            "TranscriptionJobName": jobName,
+            "Media": ["MediaFileUri": "s3://\(bucket)/\(objectKey)"],
+            "MediaFormat": "wav"
+        ]
+        if settings.language == .auto {
+            startBody["IdentifyLanguage"] = true
+        } else {
+            startBody["LanguageCode"] = settings.language.bcp47
+        }
+        let startData = try JSONSerialization.data(withJSONObject: startBody)
+        var start = URLRequest(url: transcribeURL)
+        start.httpMethod = "POST"
+        start.setValue("application/x-amz-json-1.1", forHTTPHeaderField: "Content-Type")
+        start.setValue("Transcribe.StartTranscriptionJob", forHTTPHeaderField: "X-Amz-Target")
+        start.httpBody = startData
+        signer.sign(&start, service: "transcribe", body: startData)
+        _ = try await send(start)
+
+        defer {
+            Task {
+                var delete = URLRequest(url: s3URL)
+                delete.httpMethod = "DELETE"
+                signer.sign(&delete, service: "s3", body: Data())
+                _ = try? await sendData(delete)
+            }
+        }
+
+        for _ in 0..<55 {
+            try await Task.sleep(for: .seconds(1))
+            let pollData = try JSONSerialization.data(withJSONObject: ["TranscriptionJobName": jobName])
+            var poll = URLRequest(url: transcribeURL)
+            poll.httpMethod = "POST"
+            poll.setValue("application/x-amz-json-1.1", forHTTPHeaderField: "Content-Type")
+            poll.setValue("Transcribe.GetTranscriptionJob", forHTTPHeaderField: "X-Amz-Target")
+            poll.httpBody = pollData
+            signer.sign(&poll, service: "transcribe", body: pollData)
+            let statusJSON = try await send(poll)
+            let job = statusJSON["TranscriptionJob"] as? [String: Any]
+            switch job?["TranscriptionJobStatus"] as? String {
+            case "COMPLETED":
+                guard let uri = (job?["Transcript"] as? [String: Any])?["TranscriptFileUri"] as? String,
+                      let url = URL(string: uri),
+                      Network.isTrustedResultURL(url, for: settings.provider, baseURL: settings.baseURL) else {
+                    throw ProviderError.badURL
+                }
+                let transcriptData = try await sendData(URLRequest(url: url))
+                let transcriptJSON = try JSONSerialization.jsonObject(with: transcriptData) as? [String: Any]
+                let transcripts = (transcriptJSON?["results"] as? [String: Any])?["transcripts"] as? [[String: Any]]
+                guard let text = transcripts?.first?["transcript"] as? String, !text.isEmpty else {
+                    throw ProviderError.noTranscript
+                }
+                return result(text, settings, language: job?["LanguageCode"] as? String)
+            case "FAILED":
+                throw ProviderError.http(422, job?["FailureReason"] as? String ?? "Amazon Transcribe failed.")
+            default:
+                continue
+            }
+        }
+        throw ProviderError.http(408, "Amazon Transcribe timed out.")
+    }
+}
+
+struct AWSSigner: Sendable {
+    let accessKey: String
+    let secretKey: String
+    let region: String
+
+    func sign(_ request: inout URLRequest, service: String, body: Data, now: Date = Date()) {
+        guard let url = request.url, let host = url.host else { return }
+        let date = Self.timestamp.string(from: now)
+        let day = String(date.prefix(8))
+        let payloadHash = SHA256.hash(data: body).hex
+        request.setValue(host, forHTTPHeaderField: "Host")
+        request.setValue(date, forHTTPHeaderField: "X-Amz-Date")
+        request.setValue(payloadHash, forHTTPHeaderField: "X-Amz-Content-Sha256")
+
+        let allHeaders = request.allHTTPHeaderFields ?? [:]
+        let headerNames = allHeaders.keys.map { $0.lowercased() }
+        let signedNames = headerNames
+            .filter { name in name == "content-type" || name == "host" || name.hasPrefix("x-amz-") }
+            .sorted()
+        let lowerHeaders = Dictionary(uniqueKeysWithValues: allHeaders.map { ($0.key.lowercased(), $0.value) })
+        let canonicalHeaders = signedNames.map { "\($0):\(lowerHeaders[$0]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")\n" }.joined()
+        let canonicalURI = url.path.isEmpty ? "/" : url.path
+        let canonicalQuery = Self.canonicalQuery(for: url)
+        let canonicalRequest = [
+            request.httpMethod ?? "GET", canonicalURI, canonicalQuery,
+            canonicalHeaders, signedNames.joined(separator: ";"), payloadHash
+        ].joined(separator: "\n")
+        let scope = "\(day)/\(region)/\(service)/aws4_request"
+        let stringToSign = "AWS4-HMAC-SHA256\n\(date)\n\(scope)\n\(SHA256.hash(data: Data(canonicalRequest.utf8)).hex)"
+        let kDate = HMAC<SHA256>.authenticationCode(for: Data(day.utf8), using: SymmetricKey(data: Data(("AWS4" + secretKey).utf8)))
+        let kRegion = HMAC<SHA256>.authenticationCode(for: Data(region.utf8), using: SymmetricKey(data: Data(kDate)))
+        let kService = HMAC<SHA256>.authenticationCode(for: Data(service.utf8), using: SymmetricKey(data: Data(kRegion)))
+        let kSigning = HMAC<SHA256>.authenticationCode(for: Data("aws4_request".utf8), using: SymmetricKey(data: Data(kService)))
+        let signatureCode = HMAC<SHA256>.authenticationCode(
+            for: Data(stringToSign.utf8),
+            using: SymmetricKey(data: Data(kSigning))
+        )
+        let signature = signatureCode.map { String(format: "%02x", $0) }.joined()
+        request.setValue(
+            "AWS4-HMAC-SHA256 Credential=\(accessKey)/\(scope), SignedHeaders=\(signedNames.joined(separator: ";")), Signature=\(signature)",
+            forHTTPHeaderField: "Authorization"
+        )
+    }
+
+    private static let timestamp: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        return formatter
+    }()
+
+    private static func canonicalQuery(for url: URL) -> String {
+        guard let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQuery,
+              !query.isEmpty else {
+            return ""
+        }
+        return query.split(separator: "&", omittingEmptySubsequences: false)
+            .map { pair -> String in
+                let pieces = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                let name = String(pieces[0]).removingPercentEncoding ?? String(pieces[0])
+                let value = pieces.count == 2
+                    ? (String(pieces[1]).removingPercentEncoding ?? String(pieces[1]))
+                    : ""
+                return "\(awsEncode(name))=\(awsEncode(value))"
+            }
+            .sorted()
+            .joined(separator: "&")
+    }
+
+    private static func awsEncode(_ value: String) -> String {
+        value.utf8.map { byte in
+            switch byte {
+            case 65...90, 97...122, 48...57, 45, 46, 95, 126:
+                String(UnicodeScalar(byte))
+            default:
+                String(format: "%%%02X", byte)
+            }
+        }.joined()
+    }
+}
+
+private extension Digest {
+    var hex: String { map { String(format: "%02x", $0) }.joined() }
+}
+
+private func result(
+    _ text: String,
+    _ settings: ProviderSettings,
+    language: String? = nil,
+    duration: Double? = nil
+) -> TranscriptionResult {
+    TranscriptionResult(
+        text: text,
+        detectedLanguage: language,
+        duration: duration,
+        providerName: settings.provider.rawValue,
+        modelName: settings.model
+    )
+}
+
 /// Shared session with bounded timeouts, no cross-origin redirects, and response size caps.
 private enum Network {
     /// Refuse redirects that change host (prevents leaking API keys + POST body to a 3rd party).
@@ -658,7 +1096,7 @@ private enum Network {
     }
 }
 
-private func send(_ request: URLRequest) async throws -> [String: Any] {
+private func sendData(_ request: URLRequest) async throws -> Data {
     var request = request
     if request.timeoutInterval <= 0 || request.timeoutInterval > 90 {
         request.timeoutInterval = 60
@@ -679,6 +1117,12 @@ private func send(_ request: URLRequest) async throws -> [String: Any] {
     guard (200..<300).contains(status) else {
         throw ProviderError.http(status, DiagnosticsLogger.safeErrorBody(data))
     }
+    return data
+}
+
+private func send(_ request: URLRequest) async throws -> [String: Any] {
+    let data = try await sendData(request)
+    guard !data.isEmpty else { return [:] }
     let object = try JSONSerialization.jsonObject(with: data)
     return object as? [String: Any] ?? [:]
 }
