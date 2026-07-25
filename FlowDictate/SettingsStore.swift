@@ -75,8 +75,6 @@ final class SettingsStore: ObservableObject {
     ]
 
     init() {
-        LocalSecretStore.warmCache()
-
         let savedProvider = SpeechProvider(rawValue: defaults.string(forKey: "provider") ?? "") ?? .openAI
         if defaults.object(forKey: Self.modelKey(savedProvider)) == nil, let savedModel = defaults.string(forKey: "model") {
             defaults.set(savedModel, forKey: Self.modelKey(savedProvider))
@@ -139,7 +137,9 @@ final class SettingsStore: ObservableObject {
         deepgramPunctuation = defaults.object(forKey: "deepgramPunctuation") as? Bool ?? true
         gladiaCodeSwitching = defaults.object(forKey: "gladiaCodeSwitching") as? Bool ?? true
         punctuation = defaults.object(forKey: "punctuation") as? Bool ?? true
-        apiKey = LocalSecretStore.read(provider: provider)
+        // Avoid touching Keychain during app launch. Load only when the user opens
+        // Providers or starts a transcription.
+        apiKey = ""
         normalizeModelAndBaseURL()
         L10n.code = uiLanguage.resolvedCode
     }

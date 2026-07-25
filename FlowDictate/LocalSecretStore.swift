@@ -46,13 +46,6 @@ enum LocalSecretStore {
         deleteLegacyFile()
     }
 
-    /// Prefetch into memory (call once at launch). Safe if Keychain is empty.
-    static func warmCache() {
-        lock.lock()
-        defer { lock.unlock() }
-        _ = loadUnlocked()
-    }
-
     // MARK: - Load / migrate
 
     private static func loadUnlocked() -> [String: String] {

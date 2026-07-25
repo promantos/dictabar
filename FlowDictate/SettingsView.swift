@@ -61,12 +61,20 @@ struct SettingsView: View {
             L10n.code = lang.resolvedCode
             langToken = UUID()
         }
+        .onChange(of: appState.selectedSettingsSection) { _, section in
+            if section == SettingsSection.providers.rawValue {
+                settingsStore.loadAPIKey()
+            }
+        }
         .onAppear {
             L10n.code = settingsStore.uiLanguage.resolvedCode
             permissionCenter.refresh()
             microphones.refresh()
             if appState.selectedSettingsSection == "Appearance" {
                 appState.selectedSettingsSection = SettingsSection.general.rawValue
+            }
+            if currentSection == .providers {
+                settingsStore.loadAPIKey()
             }
         }
     }
@@ -211,32 +219,26 @@ struct SettingsView: View {
 
     private var providers: some View {
         VStack(alignment: .leading, spacing: 14) {
-            SettingsCard {
-                HStack(alignment: .top, spacing: 14) {
-                    Image(systemName: "waveform.badge.magnifyingglass")
-                        .font(.system(size: 30, weight: .medium))
-                        .foregroundStyle(.tint)
-                        .frame(width: 44, height: 44)
-                        .background(.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(settingsStore.provider.rawValue)
-                            .font(.title2.weight(.semibold))
-                        Text(settingsStore.provider.summary)
-                            .foregroundStyle(.secondary)
-                        HStack(spacing: 7) {
-                            ProviderBadge(settingsStore.provider.setupLabel, color: .blue)
-                            ProviderBadge(
-                                settingsStore.provider.freeTier,
-                                color: settingsStore.provider.freeTier == "Paid" ? .secondary : .green
-                            )
-                        }
-                    }
-                    Spacer()
-                    Link(destination: settingsStore.provider.keyURL) {
-                        Label(L10n.t("prov.getKey"), systemImage: "arrow.up.right.square")
-                    }
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "waveform")
+                    .font(.title2)
+                    .foregroundStyle(.tint)
+                    .frame(width: 28)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(settingsStore.provider.rawValue)
+                        .font(.title2.weight(.semibold))
+                    Text(settingsStore.provider.summary)
+                        .foregroundStyle(.secondary)
+                    Text("\(settingsStore.provider.setupLabel)  •  \(settingsStore.provider.freeTier)")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Link(destination: settingsStore.provider.keyURL) {
+                    Label(L10n.t("prov.getKey"), systemImage: "arrow.up.right.square")
                 }
             }
+            .padding(.horizontal, 2)
 
             SettingsCard(L10n.t("prov.connection")) {
                 Picker(L10n.t("prov.provider"), selection: $settingsStore.provider) {
@@ -408,37 +410,7 @@ private struct SettingsCard<Content: View>: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(AdaptiveGlassCard())
-    }
-}
-
-private struct AdaptiveGlassCard: ViewModifier {
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if #available(macOS 26.0, *) {
-            content.glassEffect()
-        } else {
-            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        }
-    }
-}
-
-private struct ProviderBadge: View {
-    let title: String
-    let color: Color
-
-    init(_ title: String, color: Color) {
-        self.title = title
-        self.color = color
-    }
-
-    var body: some View {
-        Text(title)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(color.opacity(0.12), in: Capsule())
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

@@ -26,6 +26,12 @@ rg -q "TextInsertionService.insert" FlowDictate/DictationController.swift
 rg -q "guard case \\.recording = appState.dictationState else \\{ return \\}" FlowDictate/DictationController.swift
 rg -q "apiKeyForTranscription" FlowDictate/SettingsStore.swift
 rg -q "LocalSecretStore" FlowDictate/SettingsStore.swift
+# Launch must stay silent: no Keychain reads, permission requests, or onboarding windows.
+! rg -q "LocalSecretStore\\.warmCache" FlowDictate/FlowDictateApp.swift FlowDictate/SettingsStore.swift
+launch_block="$(sed -n '/func applicationDidFinishLaunching/,/func applicationShouldHandleReopen/p' FlowDictate/FlowDictateApp.swift)"
+! printf '%s\n' "$launch_block" | rg -q "ensureInputMonitoringListEntry|showPermissionsOnboarding"
+# macOS supplies glass to navigation and controls; never wrap settings cards in default glass capsules.
+! rg -q "glassEffect\\(|Capsule\\(" FlowDictate/SettingsView.swift
 # Keychain (SecItem) is expected via LocalSecretStore. Block only unsafe pasteboard API calls.
 if rg -q "\.writeObjects\(" FlowDictate --glob '*.swift'; then
   echo "unexpected unsafe pasteboard API (.writeObjects)"

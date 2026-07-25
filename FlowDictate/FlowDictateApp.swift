@@ -42,30 +42,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Start as accessory (menu bar). Elevate to regular while any chrome window is open
         // so system permission sheets attach to a real activation context.
         NSApp.setActivationPolicy(.accessory)
-        LocalSecretStore.warmCache()
         permissionCenter.refresh()
 
         // Recover from crash mid-recording: stale audio files + stuck system mute.
         AudioRecorder.cleanupStaleTempRecordings()
         SystemAudioMuteService.recoverIfNeeded()
 
-        // Auto-add FlowDictate to Input Monitoring list when modifier shortcuts need it.
-        // Does not open Settings; user only flips the toggle once the app is listed.
-        if settingsStore.shortcutPreset.needsInputMonitoring {
-            PermissionManager.ensureInputMonitoringListEntry()
-        }
-
         shortcutManager.start(preset: settingsStore.shortcutPreset, customShortcut: settingsStore.shortcut)
         observeSettings()
         applyMenuBarIconVisibility()
         applyAppearance(settingsStore.appearanceMode)
 
-        // Menu bar only by default. Show the permissions sheet ONLY if mic/ax still missing.
-        // Never auto-open Settings. Once permissions are ready, zero windows.
-        if !permissionCenter.requiredReady {
-            appState.showPermissionsOnboarding = true
-            showPermissionsOnboarding()
-        } else {
+        // Launch quietly as a menu-bar app. Permission prompts are shown only after
+        // an explicit user action (starting dictation or opening Permissions).
+        if permissionCenter.requiredReady {
             appState.completePermissionsOnboarding()
         }
 

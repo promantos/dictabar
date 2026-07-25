@@ -26,9 +26,8 @@ final class AppState: ObservableObject {
 
     init() {
         selectedSettingsSection = UserDefaults.standard.string(forKey: "selectedSettingsSection") ?? "General"
-        let completed = UserDefaults.standard.bool(forKey: Self.onboardingCompletedKey)
-        // Show onboarding until user finishes it at least once.
-        showPermissionsOnboarding = !completed
+        // Menu-bar apps should never surface onboarding or permission windows on launch.
+        showPermissionsOnboarding = false
     }
 
     func completePermissionsOnboarding() {
