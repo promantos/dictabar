@@ -21,13 +21,22 @@ final class AppState: ObservableObject {
     @Published var recordingShortcut = false
     /// First-run / incomplete permissions setup.
     @Published var showPermissionsOnboarding: Bool
+    /// First-run quick start (provider + key). Independent of permissions sheet.
+    @Published var showQuickStart: Bool
 
     private static let onboardingCompletedKey = "permissionsOnboardingCompleted"
+    private static let quickStartCompletedKey = "quickStartCompleted"
 
     init() {
         selectedSettingsSection = UserDefaults.standard.string(forKey: "selectedSettingsSection") ?? "General"
-        // Menu-bar apps should never surface onboarding or permission windows on launch.
+        // Menu-bar apps should never surface sheets on cold launch without a user action —
+        // AppDelegate may open Quick Start once after launch if not completed.
         showPermissionsOnboarding = false
+        showQuickStart = false
+    }
+
+    var quickStartCompleted: Bool {
+        UserDefaults.standard.bool(forKey: Self.quickStartCompletedKey)
     }
 
     func completePermissionsOnboarding() {
@@ -37,6 +46,15 @@ final class AppState: ObservableObject {
 
     func reopenPermissionsOnboarding() {
         showPermissionsOnboarding = true
+    }
+
+    func completeQuickStart() {
+        UserDefaults.standard.set(true, forKey: Self.quickStartCompletedKey)
+        showQuickStart = false
+    }
+
+    func reopenQuickStart() {
+        showQuickStart = true
     }
 
     var statusTitle: String {

@@ -288,6 +288,13 @@ final class DictationController {
 
             DiagnosticsLogger.shared.log("pipeline: text chars=\(result.text.count)")
             appState.lastTranscript = result.text
+            if settingsStore.saveTranscriptHistory {
+                TranscriptHistoryStore.shared.add(
+                    text: result.text,
+                    provider: result.providerName,
+                    model: result.modelName
+                )
+            }
 
             // 3) Insert / copy
             if autoInsert {

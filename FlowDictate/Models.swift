@@ -30,6 +30,13 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Default picker list — full catalog behind “Show all providers”.
+    static let featured: [SpeechProvider] = [
+        .openAI, .groq, .deepgram, .mistral, .elevenLabs, .assemblyAI, .openRouter, .custom
+    ]
+
+    var isFeatured: Bool { Self.featured.contains(self) }
+
     var models: [String] {
         modelInfos.map(\.id)
     }

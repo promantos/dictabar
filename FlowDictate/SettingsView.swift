@@ -11,8 +11,11 @@ struct SettingsView: View {
     @State private var keySavedFlash = false
     @State private var showingLanguages = false
     @State private var languageSearch = ""
+    @State private var testingConnection = false
+    @State private var testResult = ""
     /// Forces full tree refresh when UI language changes.
     @State private var langToken = UUID()
+    @ObservedObject private var history = TranscriptHistoryStore.shared
 
     var body: some View {
         NavigationSplitView {
@@ -27,6 +30,12 @@ struct SettingsView: View {
                 HStack {
                     Label(item.localizedTitle, systemImage: item.icon)
                     if item == .permissions, !permissionCenter.requiredReady {
+                        Spacer(minLength: 4)
+                        Circle().fill(.orange).frame(width: 8, height: 8)
+                    }
+                    if item == .providers,
+                       LocalSecretStore.read(provider: settingsStore.provider).isEmpty,
+                       settingsStore.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         Spacer(minLength: 4)
                         Circle().fill(.orange).frame(width: 8, height: 8)
                     }
@@ -89,6 +98,7 @@ struct SettingsView: View {
         case .general: general
         case .dictation: dictation
         case .providers: providers
+        case .history: historyView
         case .permissions: permissions
         case .updates: updates
         case .advanced: advanced
@@ -194,8 +204,11 @@ struct SettingsView: View {
                 HStack {
                     Text(L10n.t("dict.cancelWhile"))
                     Spacer()
-                    Text(settingsStore.cancelShortcut.display).foregroundStyle(.secondary)
+                    Text(KeyboardShortcut.escape.display).foregroundStyle(.secondary)
                 }
+                Text(L10n.t("dict.cancelHint"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 Slider(value: $settingsStore.minimumRecordingDuration, in: 0.1...2, step: 0.1) {
                     Text(L10n.t("dict.minDuration"))
                 }
@@ -256,12 +269,20 @@ struct SettingsView: View {
             .padding(.horizontal, 2)
 
             SettingsCard(L10n.t("prov.connection")) {
+                Toggle(L10n.t("prov.showAll"), isOn: $settingsStore.showAllProviders)
                 Picker(L10n.t("prov.provider"), selection: $settingsStore.provider) {
-                    ForEach(ProviderGroup.allCases) { group in
-                        Section(group.rawValue) {
-                            ForEach(SpeechProvider.allCases.filter { $0.group == group }) {
-                                Text($0.rawValue).tag($0)
+                    if settingsStore.showAllProviders {
+                        ForEach(ProviderGroup.allCases) { group in
+                            Section(group.rawValue) {
+                                ForEach(SpeechProvider.allCases.filter { $0.group == group }) {
+                                    Text($0.rawValue).tag($0)
+                                }
                             }
+                        }
+                    } else {
+                        ForEach(SpeechProvider.featured) { Text($0.rawValue).tag($0) }
+                        if !settingsStore.provider.isFeatured {
+                            Text(settingsStore.provider.rawValue).tag(settingsStore.provider)
                         }
                     }
                 }
@@ -286,6 +307,9 @@ struct SettingsView: View {
                 if let note = selectedModelInfo.note {
                     Text(note).font(.footnote).foregroundStyle(.secondary)
                 }
+                Picker(L10n.t("dict.outputLang"), selection: $settingsStore.language) {
+                    ForEach(OutputLanguage.allCases) { Text($0.localizedTitle).tag($0) }
+                }
                 if let code = settingsStore.language.apiCode,
                    !selectedModelInfo.languageCodes.contains(code) {
                     Label(L10n.t("prov.languageWarning"), systemImage: "exclamationmark.triangle.fill")
@@ -293,12 +317,14 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                 }
                 Divider()
-                TextField(L10n.t("prov.baseURL"), text: $settingsStore.baseURL)
-                    .textFieldStyle(.roundedBorder)
-                if let hint = settingsStore.provider.baseURLHint {
-                    Text(hint)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                if settingsStore.showAllProviders || settingsStore.provider.baseURLHint != nil || settingsStore.provider == .custom {
+                    TextField(L10n.t("prov.baseURL"), text: $settingsStore.baseURL)
+                        .textFieldStyle(.roundedBorder)
+                    if let hint = settingsStore.provider.baseURLHint {
+                        Text(hint)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 SecureField(L10n.t("prov.apiKey"), text: $settingsStore.apiKey)
                     .textFieldStyle(.roundedBorder)
@@ -317,6 +343,24 @@ struct SettingsView: View {
                     )
                     .foregroundStyle(settingsStore.apiKey.isEmpty ? .orange : .green)
                 }
+                HStack {
+                    Button {
+                        Task { await runConnectionTest() }
+                    } label: {
+                        if testingConnection {
+                            ProgressView().controlSize(.small)
+                        }
+                        Text(L10n.t("prov.test"))
+                    }
+                    .disabled(testingConnection || settingsStore.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Spacer()
+                }
+                if !testResult.isEmpty {
+                    Text(testResult)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
             }
 
             if settingsStore.provider == .deepgram {
@@ -330,6 +374,52 @@ struct SettingsView: View {
                 SettingsCard(L10n.t("prov.options")) {
                     Toggle(L10n.t("prov.codeSwitch"), isOn: $settingsStore.gladiaCodeSwitching)
                     Toggle(L10n.t("prov.enhPunct"), isOn: $settingsStore.punctuation)
+                }
+            }
+        }
+    }
+
+    private var historyView: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SettingsCard(L10n.t("hist.settings")) {
+                Toggle(L10n.t("hist.save"), isOn: $settingsStore.saveTranscriptHistory)
+                Text(L10n.t("hist.saveHint"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                if !history.items.isEmpty {
+                    Button(L10n.t("hist.clear"), role: .destructive) {
+                        history.clear()
+                    }
+                }
+            }
+
+            if history.items.isEmpty {
+                Text(L10n.t("hist.empty"))
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(history.items) { item in
+                    SettingsCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(item.date.formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text("\(item.provider) · \(item.model)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Text(item.text)
+                                .textSelection(.enabled)
+                                .lineLimit(6)
+                            HStack {
+                                Button(L10n.t("hist.copy")) { history.copy(item) }
+                                Button(L10n.t("hist.delete"), role: .destructive) {
+                                    history.remove(id: item.id)
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -373,12 +463,21 @@ struct SettingsView: View {
             if updateManager.downloadURL != nil {
                 Button(L10n.t("upd.openDownload")) { updateManager.openDownloadIfAvailable() }
             }
+            Text(L10n.t("upd.feedHint"))
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
         }
     }
 
     private var advanced: some View {
         SettingsCard {
             Toggle(L10n.t("adv.debug"), isOn: $settingsStore.debugMode)
+            if settingsStore.debugMode {
+                Text(L10n.t("adv.debugHint"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             Text("\(L10n.t("adv.lastError")): \(appState.lastError.isEmpty ? L10n.t("adv.none") : appState.lastError)")
                 .textSelection(.enabled)
             Button(L10n.t("adv.exportLog")) {
@@ -408,6 +507,97 @@ struct SettingsView: View {
             try? await Task.sleep(for: .seconds(1.5))
             keySavedFlash = false
         }
+    }
+
+    @MainActor
+    private func runConnectionTest() async {
+        saveKey()
+        testingConnection = true
+        testResult = L10n.t("prov.testing")
+        defer { testingConnection = false }
+        do {
+            let text = try await ProviderConnectionTester.run(
+                settings: settingsStore.providerSettings,
+                apiKey: settingsStore.apiKeyForTranscription()
+            )
+            testResult = L10n.tf("prov.testOK", text)
+        } catch {
+            testResult = L10n.tf("prov.testFail", error.localizedDescription)
+        }
+    }
+}
+
+/// First-run: pick a common provider + paste API key.
+struct QuickStartView: View {
+    @ObservedObject var settingsStore: SettingsStore
+    var onContinue: () -> Void
+    var onOpenProviders: () -> Void
+
+    @State private var flash = false
+
+    private let starters: [SpeechProvider] = [.openAI, .groq, .deepgram, .elevenLabs, .custom]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                Image(systemName: "waveform.circle.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.tint)
+                    .symbolRenderingMode(.hierarchical)
+                Text(L10n.t("quick.title"))
+                    .font(.largeTitle.bold())
+                Text(L10n.t("quick.body"))
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 440)
+            }
+            .padding(.top, 28)
+            .padding(.horizontal, 28)
+            .padding(.bottom, 16)
+
+            VStack(alignment: .leading, spacing: 12) {
+                Picker(L10n.t("prov.provider"), selection: $settingsStore.provider) {
+                    ForEach(starters) { Text($0.rawValue).tag($0) }
+                }
+                SecureField(L10n.t("prov.apiKey"), text: $settingsStore.apiKey)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Link(destination: settingsStore.provider.keyURL) {
+                        Label(L10n.t("prov.getKey"), systemImage: "arrow.up.right.square")
+                    }
+                    Spacer()
+                    if flash {
+                        Text(L10n.t("prov.saved")).foregroundStyle(.green)
+                    }
+                }
+                Text(L10n.t("quick.privacy"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 28)
+
+            Spacer(minLength: 12)
+
+            HStack {
+                Button(L10n.t("quick.moreProviders")) { onOpenProviders() }
+                    .buttonStyle(.bordered)
+                Spacer()
+                Button(L10n.t("quick.skip")) { onContinue() }
+                    .buttonStyle(.bordered)
+                Button(L10n.t("quick.saveContinue")) {
+                    settingsStore.saveAPIKey()
+                    flash = true
+                    onContinue()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(20)
+            .background(.bar)
+        }
+        .frame(width: 520, height: 420)
+        .onAppear { settingsStore.loadAPIKey() }
     }
 }
 

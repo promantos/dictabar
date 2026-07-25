@@ -40,9 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var quitMenuItem: NSMenuItem?
     private var settingsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
+    private var quickStartWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
     private var settingsChromeCounted = false
     private var onboardingChromeCounted = false
+    private var quickStartChromeCounted = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Start as accessory (menu bar). Elevate to regular while any chrome window is open
@@ -65,6 +67,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             appState.completePermissionsOnboarding()
         }
 
+        // First run: open Quick Start once (provider + key). Skip if already done.
+        if !appState.quickStartCompleted {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.showQuickStart()
+            }
+        }
+
         if settingsStore.automaticallyCheckUpdates {
             Task {
                 await UpdateManager.shared.check(
@@ -77,6 +86,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DiagnosticsLogger.shared.log(
             "FlowDictate launched \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") mic=\(permissionCenter.microphone) ax=\(permissionCenter.accessibility) input=\(permissionCenter.inputMonitoring)"
         )
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if appState.isDictationActive {
+            let alert = NSAlert()
+            alert.messageText = L10n.t("quit.activeTitle")
+            alert.informativeText = L10n.t("quit.activeBody")
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: L10n.t("quit.quitAnyway"))
+            alert.addButton(withTitle: L10n.t("quit.stay"))
+            let response = alert.runModal()
+            if response == .alertSecondButtonReturn {
+                return .terminateCancel
+            }
+            dictationController.cancel()
+        }
+        return .terminateNow
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -322,6 +348,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         permissionCenter.refresh()
     }
 
+    private func showQuickStart() {
+        appState.showQuickStart = true
+        if quickStartWindow == nil {
+            let root = QuickStartView(
+                settingsStore: settingsStore,
+                onContinue: { [weak self] in
+                    guard let self else { return }
+                    self.appState.completeQuickStart()
+                    self.quickStartWindow?.close()
+                    if !self.permissionCenter.requiredReady {
+                        self.appState.reopenPermissionsOnboarding()
+                    }
+                },
+                onOpenProviders: { [weak self] in
+                    self?.appState.completeQuickStart()
+                    self?.quickStartWindow?.close()
+                    self?.appState.selectedSettingsSection = SettingsSection.providers.rawValue
+                    self?.showSettings()
+                }
+            )
+            let host = NSHostingController(rootView: root)
+            let window = NSWindow(contentViewController: host)
+            window.title = "FlowDictate"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            quickStartWindow = window
+        }
+        if !quickStartChromeCounted {
+            quickStartChromeCounted = true
+            elevateActivationPolicy()
+        }
+        quickStartWindow?.center()
+        quickStartWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     // MARK: - Activation policy (permission sheets need a regular app context)
 
     private func elevateActivationPolicy() {
@@ -333,7 +396,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func maybeReturnToAccessory() {
         let settingsVisible = settingsWindow?.isVisible == true
         let onboardingVisible = onboardingWindow?.isVisible == true
-        if !settingsVisible && !onboardingVisible {
+        let quickStartVisible = quickStartWindow?.isVisible == true
+        if !settingsVisible && !onboardingVisible && !quickStartVisible {
             NSApp.setActivationPolicy(.accessory)
         }
     }
@@ -347,6 +411,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             onboardingChromeCounted = false
             appState.completePermissionsOnboarding()
         }
+        if window === quickStartWindow {
+            quickStartChromeCounted = false
+            // Closing the sheet counts as skip for this machine.
+            appState.completeQuickStart()
+        }
         // Defer until after close so isVisible is accurate.
         DispatchQueue.main.async { [weak self] in
             self?.maybeReturnToAccessory()
@@ -359,6 +428,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case general = "General"
     case dictation = "Dictation"
     case providers = "Providers"
+    case history = "History"
     case permissions = "Permissions"
     case updates = "Updates"
     case advanced = "Advanced"
@@ -369,6 +439,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: L10n.t("section.general")
         case .dictation: L10n.t("section.dictation")
         case .providers: L10n.t("section.providers")
+        case .history: L10n.t("section.history")
         case .permissions: L10n.t("section.permissions")
         case .updates: L10n.t("section.updates")
         case .advanced: L10n.t("section.advanced")
@@ -379,6 +450,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: "gearshape"
         case .dictation: "mic"
         case .providers: "network"
+        case .history: "clock.arrow.circlepath"
         case .permissions: "lock.shield"
         case .updates: "arrow.clockwise"
         case .advanced: "wrench.and.screwdriver"

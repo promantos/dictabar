@@ -21,8 +21,11 @@ final class SettingsStore: ObservableObject {
     @Published var language: OutputLanguage { didSet { save() } }
     @Published var launchAtLogin: Bool { didSet { save() } }
     @Published var showMenuBarIcon: Bool { didSet { save() } }
-    @Published var startHidden: Bool { didSet { save() } }
     @Published var playSounds: Bool { didSet { save() } }
+    /// Keep last N transcripts on disk (local only).
+    @Published var saveTranscriptHistory: Bool { didSet { save() } }
+    /// Show full provider catalog instead of the short featured list.
+    @Published var showAllProviders: Bool { didSet { save() } }
     @Published var showRecordingOverlay: Bool { didSet { save() } }
     @Published var privatePreview: Bool { didSet { save() } }
     @Published var muteWhileRecording: Bool { didSet { save() } }
@@ -64,8 +67,9 @@ final class SettingsStore: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private let keys = [
-        "provider", "model", "baseURL", "language", "launchAtLogin", "showMenuBarIcon", "startHidden",
-        "playSounds", "showRecordingOverlay", "privatePreview", "muteWhileRecording", "selectedMicrophoneID",
+        "provider", "model", "baseURL", "language", "launchAtLogin", "showMenuBarIcon",
+        "playSounds", "saveTranscriptHistory", "showAllProviders",
+        "showRecordingOverlay", "privatePreview", "muteWhileRecording", "selectedMicrophoneID",
         "shortcutPreset", "shortcutKeyCode", "shortcutModifiers", "shortcutDisplay", "shortcutMode", "minimumRecordingDuration",
         "maximumRecordingDuration", "autoInsert", "insertionMethod", "preserveClipboard", "addTrailingSpace",
         "addTrailingNewline", "copyOnInsertionFailure", "appearanceMode", "uiLanguage", "overlayPosition", "showTimer",
@@ -89,9 +93,9 @@ final class SettingsStore: ObservableObject {
         language = OutputLanguage(rawValue: defaults.string(forKey: "language") ?? "") ?? .auto
         launchAtLogin = LaunchAtLoginService.isEnabled
         showMenuBarIcon = defaults.object(forKey: "showMenuBarIcon") as? Bool ?? true
-        // Default true: menu-bar only, no windows on launch.
-        startHidden = defaults.object(forKey: "startHidden") as? Bool ?? true
         playSounds = defaults.bool(forKey: "playSounds")
+        saveTranscriptHistory = defaults.object(forKey: "saveTranscriptHistory") as? Bool ?? true
+        showAllProviders = defaults.bool(forKey: "showAllProviders")
         showRecordingOverlay = defaults.object(forKey: "showRecordingOverlay") as? Bool ?? true
         privatePreview = defaults.object(forKey: "privatePreview") as? Bool ?? true
         muteWhileRecording = defaults.bool(forKey: "muteWhileRecording")
@@ -210,8 +214,9 @@ final class SettingsStore: ObservableObject {
         // Keep OS launch-at-login state; only re-sync the toggle.
         launchAtLogin = LaunchAtLoginService.isEnabled
         showMenuBarIcon = true
-        startHidden = true
         playSounds = false
+        saveTranscriptHistory = true
+        showAllProviders = false
         showRecordingOverlay = true
         privatePreview = true
         muteWhileRecording = false
@@ -246,6 +251,7 @@ final class SettingsStore: ObservableObject {
         apiKey = ""
         normalizeModelAndBaseURL()
         L10n.code = uiLanguage.resolvedCode
+        TranscriptHistoryStore.shared.clear()
     }
 
     private func normalizeModelAndBaseURL() {
@@ -280,8 +286,9 @@ final class SettingsStore: ObservableObject {
         defaults.set(language.rawValue, forKey: "language")
         defaults.set(launchAtLogin, forKey: "launchAtLogin")
         defaults.set(showMenuBarIcon, forKey: "showMenuBarIcon")
-        defaults.set(startHidden, forKey: "startHidden")
         defaults.set(playSounds, forKey: "playSounds")
+        defaults.set(saveTranscriptHistory, forKey: "saveTranscriptHistory")
+        defaults.set(showAllProviders, forKey: "showAllProviders")
         defaults.set(showRecordingOverlay, forKey: "showRecordingOverlay")
         defaults.set(privatePreview, forKey: "privatePreview")
         defaults.set(muteWhileRecording, forKey: "muteWhileRecording")

@@ -145,6 +145,7 @@ struct SonioxTranscriptionProvider: TranscriptionProvider {
 
         for _ in 0..<60 {
             try await Task.sleep(for: .seconds(1))
+            try Task.checkCancellation()
             var poll = URLRequest(url: statusURL)
             poll.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             let statusJSON = try await send(poll)
@@ -210,6 +211,7 @@ struct GladiaTranscriptionProvider: TranscriptionProvider {
         // Align with pipeline timeout (~70s headroom under 75s resource limit).
         for _ in 0..<60 {
             try await Task.sleep(for: .seconds(1))
+            try Task.checkCancellation()
             var poll = URLRequest(url: resultURL)
             poll.setValue(apiKey, forHTTPHeaderField: "x-gladia-key")
             let result = try await send(poll)
@@ -383,6 +385,7 @@ struct AssemblyAITranscriptionProvider: TranscriptionProvider {
         // Keep under pipeline 75s + session resource timeout.
         for _ in 0..<55 {
             try await Task.sleep(for: .seconds(1))
+            try Task.checkCancellation()
             var poll = URLRequest(url: pollURL)
             poll.setValue(apiKey, forHTTPHeaderField: "authorization")
             let statusJSON = try await send(poll)
@@ -941,6 +944,7 @@ struct AmazonTranscribeProvider: TranscriptionProvider {
 
         for _ in 0..<55 {
             try await Task.sleep(for: .seconds(1))
+            try Task.checkCancellation()
             let pollData = try JSONSerialization.data(withJSONObject: ["TranscriptionJobName": jobName])
             var poll = URLRequest(url: transcribeURL)
             poll.httpMethod = "POST"
