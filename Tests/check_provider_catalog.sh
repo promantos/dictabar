@@ -24,6 +24,20 @@ done
 grep -q 'stt-async-v5' "$models"
 grep -q 'mai-transcribe-1.5' "$models"
 grep -q 'scribe_v2' "$models"
+[[ "$(sed -n '/case \\.openRouter:/,/case \\.azureSpeech:/p' "$models" | grep -c 'SpeechModelInfo(id:')" -eq 10 ]]
+grep -q 'nvidia/parakeet-tdt-0.6b-v3' "$models"
+grep -q 'qwen/qwen3-asr-flash-2026-02-10' "$models"
+grep -q 'google/chirp-3' "$models"
+grep -q 'mistralai/voxtral-mini-transcribe' "$models"
+grep -q 'audio-prod.api.fireworks.ai/v1' "$providers"
+grep -q 'audio-turbo.api.fireworks.ai/v1' "$providers"
+
+fireworks_block="$(sed -n '/struct FireworksTranscriptionProvider/,/\/\/ MARK: - Together AI/p' "$providers")"
+grep -q 'request.setValue(apiKey, forHTTPHeaderField: "Authorization")' <<<"$fireworks_block"
+if grep -q '"Bearer \\(apiKey\\)"' <<<"$fireworks_block"; then
+  echo "Fireworks Audio API must receive the raw API key, not a Bearer token" >&2
+  exit 1
+fi
 
 # FlowDictate sends complete WAV files; realtime-only model IDs must stay out.
 ! grep -q 'flux-general-multi' "$models"

@@ -56,7 +56,18 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         case .assemblyAI:
             modelList(["universal", "nano", "best"], LanguageCatalog.assembly)
         case .openRouter:
-            modelList(["openai/whisper-large-v3", "openai/whisper-1", "openai/gpt-4o-mini-transcribe", "openai/gpt-4o-transcribe"], LanguageCatalog.whisper)
+            [
+                SpeechModelInfo(id: "openai/whisper-large-v3", languageCodes: LanguageCatalog.whisper),
+                SpeechModelInfo(id: "openai/whisper-large-v3-turbo", languageCodes: LanguageCatalog.whisper),
+                SpeechModelInfo(id: "openai/gpt-4o-mini-transcribe", languageCodes: LanguageCatalog.whisper),
+                SpeechModelInfo(id: "nvidia/parakeet-tdt-0.6b-v3", languageCodes: LanguageCatalog.parakeetEU),
+                SpeechModelInfo(id: "qwen/qwen3-asr-flash-2026-02-10", languageCodes: LanguageCatalog.qwenOpenRouter),
+                SpeechModelInfo(id: "google/chirp-3", languageCodes: LanguageCatalog.google),
+                SpeechModelInfo(id: "openai/whisper-1", languageCodes: LanguageCatalog.whisper),
+                SpeechModelInfo(id: "mistralai/voxtral-mini-transcribe", languageCodes: LanguageCatalog.voxtral),
+                SpeechModelInfo(id: "openai/gpt-4o-transcribe", languageCodes: LanguageCatalog.whisper),
+                SpeechModelInfo(id: "microsoft/mai-transcribe-1.5", languageCodes: LanguageCatalog.azureMAI15)
+            ]
         case .azureSpeech:
             [
                 SpeechModelInfo(id: "mai-transcribe-1.5", languageCodes: LanguageCatalog.azureMAI15, note: "Public preview"),
@@ -112,7 +123,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         // Region is part of host — change to your Speech resource region.
         case .azureSpeech: "https://eastus.api.cognitive.microsoft.com"
         case .googleCloud: "https://speech.googleapis.com/v1"
-        case .fireworks: "https://api.fireworks.ai/inference/v1"
+        case .fireworks: "https://audio-prod.api.fireworks.ai/v1"
         case .together: "https://api.together.xyz/v1"
         case .smallestAI: "https://api.smallest.ai/waves/v1"
         case .alibaba: "https://dashscope-intl.aliyuncs.com"
@@ -205,7 +216,11 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
             "Replace ACCOUNT_ID in the URL. The key field accepts a Workers AI API token."
         case .custom:
             "HTTPS only. API key and audio are sent to this host."
-        case .openRouter, .fireworks, .together, .assemblyAI:
+        case .fireworks:
+            "FlowDictate selects audio-prod for whisper-v3 and audio-turbo for whisper-v3-turbo."
+        case .alibaba:
+            "The Base URL and pay-as-you-go API key must use the same region: Singapore uses dashscope-intl; Beijing uses dashscope."
+        case .openRouter, .together, .assemblyAI:
             nil
         default:
             nil
@@ -346,6 +361,8 @@ private enum LanguageCatalog {
     static let azureMAI15 = ["ar", "as", "bg", "bn", "ca", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "gu", "hi", "hu", "id", "it", "ja", "kn", "ko", "lt", "ml", "mr", "nb", "nl", "or", "pa", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "ta", "te", "th", "tr", "uk", "vi", "zh"]
     static let azureFast = whisper
     static let google = whisper
+    static let parakeetEU = ["bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "hu", "ga", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "es", "sv"]
+    static let qwenOpenRouter = ["ar", "de", "en", "es", "fr", "it", "ja", "ko", "pt", "ru", "zh"]
     static let smallestPulse = ["en", "hi", "de", "es", "ru", "it", "fr", "nl", "pt", "uk", "pl", "cs", "sk", "lv", "et", "ro", "fi", "sv", "bg", "hu", "da", "lt", "mt", "zh", "ja", "ko"]
     static let qwenASR = ["ar", "bn", "ca", "cs", "da", "de", "el", "en", "es", "fa", "fi", "fr", "gu", "he", "hi", "hu", "id", "it", "ja", "ko", "lt", "ml", "mr", "nl", "no", "pa", "pl", "pt", "ro", "ru", "sk", "sv", "ta", "te", "th", "tr", "uk", "ur", "vi", "yue", "zh"]
     static let xAI = ["ar", "cs", "da", "de", "en", "es", "fi", "fr", "hi", "hu", "id", "it", "ja", "ko", "nl", "no", "pl", "pt", "ro", "ru", "sv", "th", "tr", "vi", "zh"]

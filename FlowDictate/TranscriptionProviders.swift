@@ -568,7 +568,20 @@ struct GoogleCloudSTTTranscriptionProvider: TranscriptionProvider {
 struct FireworksTranscriptionProvider: TranscriptionProvider {
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
-        let base = settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let configured = settings.provider.sanitizedBaseURL(settings.baseURL)
+        let standardHosts = [
+            "https://api.fireworks.ai/inference/v1",
+            "https://audio-prod.api.fireworks.ai/v1",
+            "https://audio-turbo.api.fireworks.ai/v1"
+        ]
+        let base: String
+        if standardHosts.contains(configured) {
+            base = settings.model == "whisper-v3-turbo"
+                ? "https://audio-turbo.api.fireworks.ai/v1"
+                : "https://audio-prod.api.fireworks.ai/v1"
+        } else {
+            base = configured
+        }
         guard let url = URL(string: base + "/audio/transcriptions") else { throw ProviderError.badURL }
 
         // Fireworks model ids are often "whisper-v3" — pass through as selected.
@@ -581,11 +594,18 @@ struct FireworksTranscriptionProvider: TranscriptionProvider {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(apiKey, forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = form.data
 
-        let json = try await send(request)
+        let json: [String: Any]
+        do {
+            json = try await send(request)
+        } catch ProviderError.http(401, _) {
+            throw ProviderError.unsupported(
+                "Fireworks rejected this API key. Create an inference API key from the Fireworks dashboard and save it for the Fireworks provider."
+            )
+        }
         guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
         return TranscriptionResult(
             text: text,
@@ -601,11 +621,17 @@ struct FireworksTranscriptionProvider: TranscriptionProvider {
 
 struct TogetherTranscriptionProvider: TranscriptionProvider {
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
-        try await OpenAICompatibleTranscriptionProvider().transcribe(
-            audioURL: audioURL,
-            settings: settings,
-            apiKey: apiKey
-        )
+        do {
+            return try await OpenAICompatibleTranscriptionProvider().transcribe(
+                audioURL: audioURL,
+                settings: settings,
+                apiKey: apiKey
+            )
+        } catch ProviderError.http(401, _) {
+            throw ProviderError.unsupported(
+                "Together rejected this API key. Create a key at api.together.ai/settings/api-keys and save it for the Together provider."
+            )
+        }
     }
 }
 
@@ -636,6 +662,11 @@ struct SmallestAITranscriptionProvider: TranscriptionProvider {
 struct AlibabaTranscriptionProvider: TranscriptionProvider {
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        if apiKey.hasPrefix("sk-sp-") {
+            throw ProviderError.unsupported(
+                "Alibaba Coding Plan and Token Plan keys cannot call speech models. Use a pay-as-you-go Model Studio API key."
+            )
+        }
         let base = settings.provider.sanitizedBaseURL(settings.baseURL)
         guard let url = URL(string: base + "/api/v1/services/aigc/multimodal-generation/generation") else {
             throw ProviderError.badURL
@@ -656,7 +687,14 @@ struct AlibabaTranscriptionProvider: TranscriptionProvider {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let json = try await send(request)
+        let json: [String: Any]
+        do {
+            json = try await send(request)
+        } catch ProviderError.http(401, _) {
+            throw ProviderError.unsupported(
+                "Alibaba rejected this API key. Use a pay-as-you-go Model Studio key from the same region as the Base URL: Singapore → dashscope-intl.aliyuncs.com, Beijing → dashscope.aliyuncs.com."
+            )
+        }
         let output = json["output"] as? [String: Any]
         let choices = output?["choices"] as? [[String: Any]]
         let message = choices?.first?["message"] as? [String: Any]
