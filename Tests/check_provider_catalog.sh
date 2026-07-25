@@ -24,9 +24,11 @@ done
 grep -q 'stt-async-v5' "$models"
 grep -q 'mai-transcribe-1.5' "$models"
 grep -q 'scribe_v2' "$models"
-[[ "$(sed -n '/case \\.openRouter:/,/case \\.azureSpeech:/p' "$models" | grep -c 'SpeechModelInfo(id:')" -eq 10 ]]
+[[ "$(sed -n '/case \\.openRouter:/,/case \\.azureSpeech:/p' "$models" | grep -c 'SpeechModelInfo(id:')" -eq 12 ]]
 grep -q 'nvidia/parakeet-tdt-0.6b-v3' "$models"
 grep -q 'qwen/qwen3-asr-flash-2026-02-10' "$models"
+grep -q 'x-ai/grok-stt-1.0' "$models"
+grep -q 'deepgram/nova-3' "$models"
 grep -q 'google/chirp-3' "$models"
 grep -q 'mistralai/voxtral-mini-transcribe' "$models"
 grep -q 'audio-prod.api.fireworks.ai/v1' "$providers"

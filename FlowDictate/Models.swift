@@ -62,6 +62,8 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
                 SpeechModelInfo(id: "openai/gpt-4o-mini-transcribe", languageCodes: LanguageCatalog.whisper),
                 SpeechModelInfo(id: "nvidia/parakeet-tdt-0.6b-v3", languageCodes: LanguageCatalog.parakeetEU),
                 SpeechModelInfo(id: "qwen/qwen3-asr-flash-2026-02-10", languageCodes: LanguageCatalog.qwenOpenRouter),
+                SpeechModelInfo(id: "x-ai/grok-stt-1.0", languageCodes: LanguageCatalog.xAI),
+                SpeechModelInfo(id: "deepgram/nova-3", languageCodes: LanguageCatalog.deepgram),
                 SpeechModelInfo(id: "google/chirp-3", languageCodes: LanguageCatalog.google),
                 SpeechModelInfo(id: "openai/whisper-1", languageCodes: LanguageCatalog.whisper),
                 SpeechModelInfo(id: "mistralai/voxtral-mini-transcribe", languageCodes: LanguageCatalog.voxtral),
@@ -352,7 +354,7 @@ private enum LanguageCatalog {
         "ps", "pt", "ro", "ru", "sa", "sd", "si", "sk", "sl", "sn", "so", "sq", "sr", "su", "sv", "sw", "ta",
         "te", "tg", "th", "tk", "tl", "tr", "tt", "uk", "ur", "uz", "vi", "yi", "yo", "yue", "zh"
     ]
-    static let deepgram = ["bg", "ca", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hi", "hu", "id", "it", "ja", "ko", "lt", "lv", "ms", "nl", "no", "pl", "pt", "ro", "ru", "sk", "sv", "ta", "th", "tr", "uk", "vi", "zh"]
+    static let deepgram = ["ar", "be", "bn", "bs", "bg", "ca", "yue", "zh", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de", "el", "gu", "he", "hi", "hu", "id", "it", "ja", "kn", "ko", "lv", "lt", "mk", "ms", "mr", "no", "fa", "pl", "pt", "ro", "ru", "sr", "sk", "sl", "es", "sv", "tl", "ta", "te", "th", "tr", "uk", "ur", "vi"]
     static let voxtral = ["ar", "ca", "cs", "da", "de", "el", "en", "es", "fa", "fi", "fr", "he", "hi", "hu", "id", "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ro", "ru", "sk", "sv", "ta", "tr", "uk", "vi", "zh"]
     static let soniox = whisper
     static let speechmatics = whisper
