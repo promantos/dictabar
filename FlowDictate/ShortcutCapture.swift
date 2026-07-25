@@ -57,6 +57,10 @@ struct ShortcutCapture: NSViewRepresentable {
 
                 guard event.type == .keyDown else { return event }
 
+                // Bare keys (no modifier) are almost always accidental while capturing.
+                let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+                guard !mods.isEmpty else { return nil }
+
                 let shortcut = KeyboardShortcut(
                     keyCode: UInt32(event.keyCode),
                     carbonModifiers: carbonModifiers(from: event.modifierFlags),

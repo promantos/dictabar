@@ -71,7 +71,8 @@ final class SettingsStore: ObservableObject {
         "addTrailingNewline", "copyOnInsertionFailure", "appearanceMode", "uiLanguage", "overlayPosition", "showTimer",
         "showProviderInOverlay", "showMicrophoneInOverlay", "showTranscriptPreview", "automaticallyCheckUpdates",
         "includePrereleases", "debugMode", "deepgramSmartFormat",
-        "deepgramNumerals", "deepgramPunctuation", "gladiaCodeSwitching", "punctuation"
+        "deepgramNumerals", "deepgramPunctuation", "gladiaCodeSwitching", "punctuation",
+        "cancelShortcutKeyCode", "cancelShortcutModifiers", "cancelShortcutDisplay"
     ]
 
     init() {
@@ -112,7 +113,15 @@ final class SettingsStore: ObservableObject {
             savedShortcut = .defaultDictation
         }
         shortcut = savedShortcut
-        cancelShortcut = .escape
+        if defaults.object(forKey: "cancelShortcutKeyCode") != nil {
+            cancelShortcut = KeyboardShortcut(
+                keyCode: UInt32(defaults.integer(forKey: "cancelShortcutKeyCode")),
+                carbonModifiers: UInt32(defaults.integer(forKey: "cancelShortcutModifiers")),
+                display: defaults.string(forKey: "cancelShortcutDisplay") ?? KeyboardShortcut.escape.display
+            )
+        } else {
+            cancelShortcut = .escape
+        }
         minimumRecordingDuration = defaults.object(forKey: "minimumRecordingDuration") as? Double ?? 0.3
         // Default 5 minutes for first-run; user choice is persisted afterwards.
         maximumRecordingDuration = defaults.object(forKey: "maximumRecordingDuration") as? Double ?? 300
@@ -193,7 +202,50 @@ final class SettingsStore: ObservableObject {
             defaults.removeObject(forKey: Self.baseURLKey($0))
         }
         LocalSecretStore.clearAll()
+        // Re-apply factory defaults into live @Published fields (defaults alone leave UI stale).
+        provider = .openAI
+        model = SpeechProvider.openAI.models[0]
+        baseURL = SpeechProvider.openAI.defaultBaseURL
+        language = .auto
+        // Keep OS launch-at-login state; only re-sync the toggle.
+        launchAtLogin = LaunchAtLoginService.isEnabled
+        showMenuBarIcon = true
+        startHidden = true
+        playSounds = false
+        showRecordingOverlay = true
+        privatePreview = true
+        muteWhileRecording = false
+        selectedMicrophoneID = ""
+        shortcutPreset = .rightCommand
+        shortcutMode = .toggle
+        shortcut = .defaultDictation
+        cancelShortcut = .escape
+        minimumRecordingDuration = 0.3
+        maximumRecordingDuration = 300
+        autoInsert = true
+        insertionMethod = .paste
+        preserveClipboard = true
+        addTrailingSpace = false
+        addTrailingNewline = false
+        copyOnInsertionFailure = true
+        appearanceMode = .system
+        uiLanguage = .system
+        overlayPosition = .topCenter
+        showTimer = true
+        showProviderInOverlay = false
+        showMicrophoneInOverlay = false
+        showTranscriptPreview = false
+        automaticallyCheckUpdates = true
+        includePrereleases = false
+        debugMode = false
+        deepgramSmartFormat = true
+        deepgramNumerals = true
+        deepgramPunctuation = true
+        gladiaCodeSwitching = true
+        punctuation = true
         apiKey = ""
+        normalizeModelAndBaseURL()
+        L10n.code = uiLanguage.resolvedCode
     }
 
     private func normalizeModelAndBaseURL() {
@@ -239,6 +291,9 @@ final class SettingsStore: ObservableObject {
         defaults.set(Int(shortcut.carbonModifiers), forKey: "shortcutModifiers")
         defaults.set(shortcut.display, forKey: "shortcutDisplay")
         defaults.set(shortcutMode.rawValue, forKey: "shortcutMode")
+        defaults.set(Int(cancelShortcut.keyCode), forKey: "cancelShortcutKeyCode")
+        defaults.set(Int(cancelShortcut.carbonModifiers), forKey: "cancelShortcutModifiers")
+        defaults.set(cancelShortcut.display, forKey: "cancelShortcutDisplay")
         defaults.set(minimumRecordingDuration, forKey: "minimumRecordingDuration")
         defaults.set(maximumRecordingDuration, forKey: "maximumRecordingDuration")
         defaults.set(autoInsert, forKey: "autoInsert")

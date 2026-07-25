@@ -110,10 +110,10 @@ enum TextInsertionService {
                 return
             }
             let current = pb.string(forType: .string) ?? ""
-            if current == text || (!text.isEmpty && current == text.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: pass)
-            } else if current.contains(text) && text.count > 8 {
-                // Partial / combined content — still scrub.
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Exact match only — contains() would clobber a legitimate new clipboard
+            // that happens to include the transcript as a substring.
+            if current == text || (!trimmed.isEmpty && current == trimmed) {
                 removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: pass)
             } else {
                 // Do NOT log clipboard contents (may be passwords/tokens).

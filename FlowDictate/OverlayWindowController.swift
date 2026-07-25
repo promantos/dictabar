@@ -7,6 +7,8 @@ final class OverlayWindowController {
     private var hideTask: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
     private var recordingStartedAt: Date?
+    /// Last message shown for .recording — timer ticks must not overwrite L10n.
+    private var recordingMessage = ""
 
     func show(
         kind: RecordingOverlay.Kind,
@@ -16,6 +18,7 @@ final class OverlayWindowController {
     ) {
         if kind == .recording {
             recordingStartedAt = settings.recordingStartedAt ?? Date()
+            recordingMessage = message
         } else {
             timerTask?.cancel()
             timerTask = nil
@@ -41,6 +44,7 @@ final class OverlayWindowController {
         timerTask?.cancel()
         timerTask = nil
         recordingStartedAt = nil
+        recordingMessage = ""
         window?.orderOut(nil)
     }
 
@@ -51,10 +55,10 @@ final class OverlayWindowController {
                 try? await Task.sleep(for: .milliseconds(250))
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    guard let self, let _ = self.recordingStartedAt else { return }
+                    guard let self, self.recordingStartedAt != nil else { return }
                     self.render(
                         kind: .recording,
-                        message: "Recording",
+                        message: self.recordingMessage,
                         settings: settings,
                         elapsed: self.elapsedString(settings: settings)
                     )

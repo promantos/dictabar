@@ -94,10 +94,12 @@ final class PermissionCenter: ObservableObject {
         startPollingWhileAway()
     }
 
-    /// Mic + Accessibility required. Input Monitoring is NOT required to record.
-    func ensureForDictation(needsInputMonitoring: Bool) async -> (ok: Bool, message: String?) {
+    /// Mic always required. Accessibility only when inserting text. IM is NOT required to record.
+    func ensureForDictation(needsInputMonitoring: Bool, needsAccessibility: Bool = true) async -> (ok: Bool, message: String?) {
         refresh()
-        DiagnosticsLogger.shared.log("ensureForDictation mic=\(microphone) ax=\(accessibility) needIM=\(needsInputMonitoring)")
+        DiagnosticsLogger.shared.log(
+            "ensureForDictation mic=\(microphone) ax=\(accessibility) needAX=\(needsAccessibility) needIM=\(needsInputMonitoring)"
+        )
 
         if !microphone.isGranted {
             if microphone == .notDetermined {
@@ -111,7 +113,7 @@ final class PermissionCenter: ObservableObject {
             }
         }
 
-        if !accessibility.isGranted {
+        if needsAccessibility && !accessibility.isGranted {
             let granted = await PermissionManager.requestAccessibilityAccessAsync()
             refresh()
             if !granted {

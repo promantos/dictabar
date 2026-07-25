@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 
 @MainActor
@@ -370,8 +371,10 @@ final class DictationController {
 
     private func ensurePermissions() async -> Bool {
         // Recording needs mic only; paste needs accessibility. Input Monitoring is NOT required here.
+        let needsAX = settingsStore.autoInsert
         let result = await PermissionCenter.shared.ensureForDictation(
-            needsInputMonitoring: settingsStore.shortcutPreset.needsInputMonitoring
+            needsInputMonitoring: settingsStore.shortcutPreset.needsInputMonitoring,
+            needsAccessibility: needsAX
         )
         if result.ok {
             DiagnosticsLogger.shared.log("ensurePermissions ok")
@@ -384,13 +387,15 @@ final class DictationController {
         appState.lastError = message
         if !PermissionCenter.shared.microphone.isGranted {
             appState.dictationState = .needsMicrophonePermission
-        } else if !PermissionCenter.shared.accessibility.isGranted {
+        } else if needsAX && !PermissionCenter.shared.accessibility.isGranted {
             appState.dictationState = .needsAccessibilityPermission
         } else {
             appState.dictationState = .failed(message)
         }
-        // Re-show permissions sheet only when mic/ax still missing (never auto-open Settings).
-        if !PermissionCenter.shared.requiredReady {
+        // Re-show permissions sheet only when still-required perms are missing (never auto-open Settings).
+        let micOK = PermissionCenter.shared.microphone.isGranted
+        let axOK = !needsAX || PermissionCenter.shared.accessibility.isGranted
+        if !(micOK && axOK) {
             appState.reopenPermissionsOnboarding()
         }
         DiagnosticsLogger.shared.log("ensurePermissions failed: \(message)")
@@ -424,22 +429,29 @@ final class DictationController {
     private func installCancelMonitor() {
         removeCancelMonitor()
         let keyCode = settingsStore.cancelShortcut.keyCode
+        let carbonMods = settingsStore.cancelShortcut.carbonModifiers
         globalCancelMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard Self.isCancelEvent(event, keyCode: keyCode) else { return }
+            guard Self.isCancelEvent(event, keyCode: keyCode, carbonModifiers: carbonMods) else { return }
             Task { @MainActor in self?.cancel() }
         }
         localCancelMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard Self.isCancelEvent(event, keyCode: keyCode) else { return event }
+            guard Self.isCancelEvent(event, keyCode: keyCode, carbonModifiers: carbonMods) else { return event }
             Task { @MainActor in self?.cancel() }
             return nil
         }
     }
 
-    private static func isCancelEvent(_ event: NSEvent, keyCode: UInt32) -> Bool {
+    private static func isCancelEvent(_ event: NSEvent, keyCode: UInt32, carbonModifiers: UInt32 = 0) -> Bool {
         guard UInt32(event.keyCode) == keyCode else { return false }
         let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
-        if keyCode == 53 { return mods.isEmpty }
-        return true
+        // Escape (53) and any cancel with no mods: bare key only.
+        if carbonModifiers == 0 { return mods.isEmpty }
+        var eventCarbon: UInt32 = 0
+        if mods.contains(.command) { eventCarbon |= UInt32(cmdKey) }
+        if mods.contains(.option) { eventCarbon |= UInt32(optionKey) }
+        if mods.contains(.control) { eventCarbon |= UInt32(controlKey) }
+        if mods.contains(.shift) { eventCarbon |= UInt32(shiftKey) }
+        return eventCarbon == carbonModifiers
     }
 
     private func removeCancelMonitor() {

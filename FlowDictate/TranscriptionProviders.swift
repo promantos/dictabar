@@ -520,8 +520,8 @@ struct GoogleCloudSTTTranscriptionProvider: TranscriptionProvider {
         components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
         guard let url = components.url else { throw ProviderError.badURL }
 
-        let audioData = try Data(contentsOf: audioURL)
-        let b64 = audioData.base64EncodedString()
+        // Recorder writes WAV; Google wants raw LINEAR16 PCM (no RIFF header).
+        let b64 = try linear16PCM(fromWAV: audioURL).base64EncodedString()
         let languageCode = settings.language == .auto ? "en-US" : settings.language.bcp47
 
         var config: [String: Any] = [
@@ -732,7 +732,8 @@ struct InworldTranscriptionProvider: TranscriptionProvider {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
         let base = settings.provider.sanitizedBaseURL(settings.baseURL)
         guard let url = URL(string: base + "/stt/v1/transcribe") else { throw ProviderError.badURL }
-        let audio = try Data(contentsOf: audioURL).base64EncodedString()
+        // Recorder writes WAV; Inworld expects raw LINEAR16 PCM payload.
+        let audio = try linear16PCM(fromWAV: audioURL).base64EncodedString()
         var config: [String: Any] = [
             "modelId": settings.model,
             "audioEncoding": "LINEAR16",
@@ -1072,6 +1073,36 @@ private func result(
         providerName: settings.provider.rawValue,
         modelName: settings.model
     )
+}
+
+/// Strip RIFF/WAV container for APIs that want raw LINEAR16 PCM.
+/// FlowDictate records mono 16-bit LE PCM @ 16 kHz — standard 44-byte header, or "data" chunk.
+private func linear16PCM(fromWAV url: URL) throws -> Data {
+    let data = try Data(contentsOf: url)
+    guard data.count > 44,
+          data.starts(with: Data("RIFF".utf8)),
+          data.count >= 12,
+          data[8..<12] == Data("WAVE".utf8) else {
+        return data
+    }
+    // Walk chunks after "WAVE" until "data".
+    var offset = 12
+    while offset + 8 <= data.count {
+        let id = data[offset..<(offset + 4)]
+        let size = Int(data[offset + 4])
+            | (Int(data[offset + 5]) << 8)
+            | (Int(data[offset + 6]) << 16)
+            | (Int(data[offset + 7]) << 24)
+        let payloadStart = offset + 8
+        let payloadEnd = min(payloadStart + max(size, 0), data.count)
+        if id == Data("data".utf8) {
+            return data.subdata(in: payloadStart..<payloadEnd)
+        }
+        // Chunks are word-aligned.
+        offset = payloadEnd + (size & 1)
+    }
+    // Fallback for our fixed recorder layout.
+    return data.subdata(in: 44..<data.count)
 }
 
 /// Shared session with bounded timeouts, no cross-origin redirects, and response size caps.

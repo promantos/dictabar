@@ -12,7 +12,8 @@ enum SystemAudioMuteService {
     private static let defaultsKey = "flowdictate.pendingAudioRestore"
 
     private struct RestoreState: Codable {
-        let deviceID: UInt32
+        /// Kept for decoding older crash-recovery blobs; restore always targets current default output.
+        let deviceID: UInt32?
         let muted: UInt32?
         let volume: Float32?
     }
@@ -27,7 +28,8 @@ enum SystemAudioMuteService {
 
         let previousMute = muteValue(deviceID: deviceID)
         let previousVolume = volumeValue(deviceID: deviceID)
-        let state = RestoreState(deviceID: deviceID, muted: previousMute, volume: previousVolume)
+        // Snapshot levels only — device may change (BT disconnect) before endMute.
+        let state = RestoreState(deviceID: nil, muted: previousMute, volume: previousVolume)
         activeRestore = state
         persist(state)
 
@@ -90,7 +92,10 @@ enum SystemAudioMuteService {
     }
 
     private static func applyRestore(_ state: RestoreState) {
-        let deviceID = AudioObjectID(state.deviceID)
+        // Always restore the *current* default output. Snapshot device IDs go stale
+        // when headphones disconnect mid-session.
+        let deviceID = defaultOutputDevice()
+        guard deviceID != kAudioObjectUnknown else { return }
         if let muted = state.muted {
             _ = setMuted(muted != 0, deviceID: deviceID)
         } else {

@@ -110,7 +110,22 @@ struct SettingsView: View {
                         }
                     }
                 ))
-                Toggle(L10n.t("general.menuBar"), isOn: $settingsStore.showMenuBarIcon)
+                Toggle(L10n.t("general.menuBar"), isOn: Binding(
+                    get: { settingsStore.showMenuBarIcon },
+                    set: { on in
+                        settingsStore.showMenuBarIcon = on
+                        // LSUIElement app: without the menu bar icon there is no Dock entry.
+                        // Recovery is reopen from Finder / Spotlight (applicationShouldHandleReopen).
+                        if !on {
+                            appState.lastError = L10n.t("general.menuBarHiddenHint")
+                        }
+                    }
+                ))
+                if !settingsStore.showMenuBarIcon {
+                    Text(L10n.t("general.menuBarHiddenHint"))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
                 Toggle(L10n.t("general.sounds"), isOn: $settingsStore.playSounds)
                 Picker(L10n.t("general.uiLanguage"), selection: $settingsStore.uiLanguage) {
                     ForEach(AppUILanguage.allCases) { Text($0.displayName).tag($0) }
@@ -371,11 +386,13 @@ struct SettingsView: View {
             }
             Button(L10n.t("adv.clearLog")) { DiagnosticsLogger.shared.clear() }
             Button(L10n.t("adv.clearKeys"), role: .destructive) {
+                settingsStore.clearAPIKey()
                 LocalSecretStore.clearAll()
                 settingsStore.apiKey = ""
             }
             Button(L10n.t("adv.reset"), role: .destructive) {
                 settingsStore.resetAll()
+                langToken = UUID()
                 appState.lastError = L10n.t("adv.resetDone")
             }
             Text(L10n.t("adv.privacy"))
