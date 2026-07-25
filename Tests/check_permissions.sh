@@ -32,6 +32,10 @@ launch_block="$(sed -n '/func applicationDidFinishLaunching/,/func applicationSh
 ! printf '%s\n' "$launch_block" | rg -q "ensureInputMonitoringListEntry|showPermissionsOnboarding"
 # macOS supplies glass to navigation and controls; never wrap settings cards in default glass capsules.
 ! rg -q "glassEffect\\(|Capsule\\(" FlowDictate/SettingsView.swift
+# Keep system UI stable: one persistent status item and no SwiftUI child-window popovers.
+[ "$(rg -c "NSStatusBar\\.system\\.statusItem" FlowDictate/FlowDictateApp.swift)" -eq 1 ]
+! rg -q "\\.popover\\(" FlowDictate/SettingsView.swift
+rg -q "watchdog re-enabled event tap" FlowDictate/GlobalShortcutManager.swift
 # Keychain (SecItem) is expected via LocalSecretStore. Block only unsafe pasteboard API calls.
 if rg -q "\.writeObjects\(" FlowDictate --glob '*.swift'; then
   echo "unexpected unsafe pasteboard API (.writeObjects)"

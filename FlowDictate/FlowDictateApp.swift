@@ -31,7 +31,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     )
     private var statusItem: NSStatusItem?
+    private var startStopMenuItem: NSMenuItem?
+    private var cancelMenuItem: NSMenuItem?
     private var providerMenuItem: NSMenuItem?
+    private var permissionsMenuItem: NSMenuItem?
+    private var settingsMenuItem: NSMenuItem?
+    private var updatesMenuItem: NSMenuItem?
+    private var quitMenuItem: NSMenuItem?
     private var settingsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
     private var cancellables = Set<AnyCancellable>()
@@ -94,9 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         settingsStore.$provider
             .combineLatest(settingsStore.$uiLanguage)
-            .sink { [weak self] provider, _ in
-                self?.providerMenuItem?.title = "\(L10n.t("menu.provider")): \(provider.rawValue)"
-                self?.rebuildMenuTitles()
+            .sink { [weak self] _, _ in
+                self?.refreshMenuTitles()
             }
             .store(in: &cancellables)
 
@@ -163,21 +168,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func rebuildMenuTitles() {
-        // Rebuild menu when UI language changes.
-        if statusItem != nil {
-            setupMenuBar()
-            applyMenuBarIconVisibility()
-        }
+    private func refreshMenuTitles() {
+        startStopMenuItem?.title = L10n.t("menu.startStop")
+        cancelMenuItem?.title = L10n.t("menu.cancel")
+        providerMenuItem?.title = "\(L10n.t("menu.provider")): \(settingsStore.provider.rawValue)"
+        permissionsMenuItem?.title = L10n.t("section.permissions") + "…"
+        settingsMenuItem?.title = L10n.t("menu.settings")
+        updatesMenuItem?.title = L10n.t("menu.updates")
+        quitMenuItem?.title = L10n.t("menu.quit")
     }
 
     private func setupMenuBar() {
+        // NSStatusItem owns remote AppKit scenes on newer macOS versions. Keep one
+        // instance for the process lifetime; replacing it while its menu is tracked
+        // can abort inside NSSceneStatusItem/NSRemoteView.
+        guard statusItem == nil else {
+            refreshMenuTitles()
+            return
+        }
+
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(systemSymbolName: "mic.circle.fill", accessibilityDescription: "FlowDictate")
 
         let menu = NSMenu()
-        menu.addItem(menuItem(L10n.t("menu.startStop"), action: #selector(toggleDictation), keyEquivalent: ""))
-        menu.addItem(menuItem(L10n.t("menu.cancel"), action: #selector(cancelDictation), keyEquivalent: ""))
+        startStopMenuItem = menuItem(L10n.t("menu.startStop"), action: #selector(toggleDictation), keyEquivalent: "")
+        cancelMenuItem = menuItem(L10n.t("menu.cancel"), action: #selector(cancelDictation), keyEquivalent: "")
+        menu.addItem(startStopMenuItem!)
+        menu.addItem(cancelMenuItem!)
         menu.addItem(.separator())
         let providerItem = NSMenuItem(
             title: "\(L10n.t("menu.provider")): \(settingsStore.provider.rawValue)",
@@ -186,11 +203,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
         providerMenuItem = providerItem
         menu.addItem(providerItem)
-        menu.addItem(menuItem(L10n.t("section.permissions") + "…", action: #selector(showPermissions), keyEquivalent: ""))
-        menu.addItem(menuItem(L10n.t("menu.settings"), action: #selector(showSettings), keyEquivalent: ","))
-        menu.addItem(menuItem(L10n.t("menu.updates"), action: #selector(checkForUpdates), keyEquivalent: ""))
+        permissionsMenuItem = menuItem(L10n.t("section.permissions") + "…", action: #selector(showPermissions), keyEquivalent: "")
+        settingsMenuItem = menuItem(L10n.t("menu.settings"), action: #selector(showSettings), keyEquivalent: ",")
+        updatesMenuItem = menuItem(L10n.t("menu.updates"), action: #selector(checkForUpdates), keyEquivalent: "")
+        menu.addItem(permissionsMenuItem!)
+        menu.addItem(settingsMenuItem!)
+        menu.addItem(updatesMenuItem!)
         menu.addItem(.separator())
-        menu.addItem(menuItem(L10n.t("menu.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        quitMenuItem = menuItem(L10n.t("menu.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(quitMenuItem!)
         item.menu = menu
         statusItem = item
     }

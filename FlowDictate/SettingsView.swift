@@ -264,9 +264,9 @@ struct SettingsView: View {
                             systemImage: "globe"
                         )
                     }
-                    .popover(isPresented: $showingLanguages, arrowEdge: .bottom) {
-                        LanguagePopover(model: selectedModelInfo, search: $languageSearch)
-                    }
+                }
+                if showingLanguages {
+                    LanguagePanel(model: selectedModelInfo, search: $languageSearch)
                 }
                 if let note = selectedModelInfo.note {
                     Text(note).font(.footnote).foregroundStyle(.secondary)
@@ -414,7 +414,7 @@ private struct SettingsCard<Content: View>: View {
     }
 }
 
-private struct LanguagePopover: View {
+private struct LanguagePanel: View {
     let model: SpeechModelInfo
     @Binding var search: String
 
@@ -448,7 +448,13 @@ private struct LanguagePopover: View {
                 .padding(.vertical, 2)
             }
         }
-        .padding(16)
-        .frame(width: 430, height: 390)
+        .padding(12)
+        .frame(maxWidth: .infinity)
+        .frame(height: 280)
+        .background(.background, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(.separator, lineWidth: 1)
+        }
     }
 }
