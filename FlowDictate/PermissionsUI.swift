@@ -4,6 +4,7 @@ import SwiftUI
 struct PermissionsPanel: View {
     @ObservedObject var center: PermissionCenter
     var needsInputMonitoring: Bool
+    var needsAccessibility: Bool = true
     var compact: Bool = false
     var onAllRequiredReady: (() -> Void)? = nil
 
@@ -29,7 +30,7 @@ struct PermissionsPanel: View {
                 title: L10n.t("perm.ax"),
                 subtitle: L10n.t("perm.axDesc"),
                 status: center.accessibility,
-                required: true,
+                required: needsAccessibility,
                 actionTitle: actionTitle(for: center.accessibility, name: L10n.t("perm.ax")),
                 action: { Task { await center.enableAccessibility() } },
                 openSettings: PermissionManager.openAccessibilitySettings
@@ -59,7 +60,7 @@ struct PermissionsPanel: View {
 
             footerHints
         }
-        .onChange(of: center.requiredReady) { _, ready in
+        .onChange(of: center.isReady(needsAccessibility: needsAccessibility)) { _, ready in
             if ready { onAllRequiredReady?() }
         }
         .onAppear { center.refresh() }
@@ -72,8 +73,8 @@ struct PermissionsPanel: View {
             }
             HStack(spacing: 8) {
                 statusPill(
-                    ready: center.requiredReady,
-                    text: center.requiredReady ? L10n.t("perm.ready") : L10n.t("perm.setup")
+                    ready: center.isReady(needsAccessibility: needsAccessibility),
+                    text: center.isReady(needsAccessibility: needsAccessibility) ? L10n.t("perm.ready") : L10n.t("perm.setup")
                 )
                 Text(progressLabel)
                     .font(.subheadline)
@@ -87,12 +88,14 @@ struct PermissionsPanel: View {
     }
 
     private var progressLabel: String {
-        let requiredDone = (center.microphone.isGranted ? 1 : 0) + (center.accessibility.isGranted ? 1 : 0)
+        let requiredDone = (center.microphone.isGranted ? 1 : 0)
+            + (needsAccessibility && center.accessibility.isGranted ? 1 : 0)
+        let requiredTotal = needsAccessibility ? 2 : 1
         if needsInputMonitoring {
             let optional = center.inputMonitoring.isGranted ? 1 : 0
-            return L10n.tf("perm.progress", requiredDone + optional, 3)
+            return L10n.tf("perm.progress", requiredDone + optional, requiredTotal + 1)
         }
-        return L10n.tf("perm.progress", requiredDone, 2)
+        return L10n.tf("perm.progress", requiredDone, requiredTotal)
     }
 
     private var footerHints: some View {
@@ -191,6 +194,7 @@ struct PermissionsPanel: View {
 struct PermissionsOnboardingView: View {
     @ObservedObject var center: PermissionCenter
     var needsInputMonitoring: Bool
+    var needsAccessibility: Bool
     var onContinue: () -> Void
     var onOpenFullSettings: () -> Void
 
@@ -217,6 +221,7 @@ struct PermissionsOnboardingView: View {
                 PermissionsPanel(
                     center: center,
                     needsInputMonitoring: needsInputMonitoring,
+                    needsAccessibility: needsAccessibility,
                     compact: true
                 )
                 .padding(.horizontal, 28)
@@ -226,7 +231,7 @@ struct PermissionsOnboardingView: View {
                 Button(L10n.t("perm.openFull")) { onOpenFullSettings() }
                     .buttonStyle(.bordered)
                 Spacer()
-                Button(center.requiredReady ? L10n.t("perm.done") : L10n.t("perm.later")) {
+                Button(center.isReady(needsAccessibility: needsAccessibility) ? L10n.t("perm.done") : L10n.t("perm.later")) {
                     onContinue()
                 }
                 .buttonStyle(.borderedProminent)

@@ -15,6 +15,7 @@ final class AppState: ObservableObject {
     @Published var dictationState: DictationState = .idle
     @Published var lastTranscript = ""
     @Published var lastError = ""
+    @Published var hasRetryableDictation = false
     @Published var selectedSettingsSection: String {
         didSet { UserDefaults.standard.set(selectedSettingsSection, forKey: "selectedSettingsSection") }
     }

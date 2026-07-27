@@ -27,7 +27,11 @@ final class PermissionCenter: ObservableObject {
         inputMonitoring = PermissionManager.hasInputMonitoringAccess() ? .authorized : .denied
     }
 
-    var requiredReady: Bool { microphone.isGranted && accessibility.isGranted }
+    var requiredReady: Bool { isReady(needsAccessibility: true) }
+
+    func isReady(needsAccessibility: Bool) -> Bool {
+        microphone.isGranted && (!needsAccessibility || accessibility.isGranted)
+    }
 
     func enableMicrophone() async {
         isBusy = true
@@ -138,11 +142,9 @@ final class PermissionCenter: ObservableObject {
     private func startPollingWhileAway() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
-            for _ in 0..<30 {
-                try? await Task.sleep(for: .seconds(2))
-                guard !Task.isCancelled else { return }
-                await MainActor.run { self?.refresh() }
-            }
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { self?.refresh() }
         }
     }
 }

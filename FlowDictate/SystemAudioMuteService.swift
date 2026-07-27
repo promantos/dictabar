@@ -12,7 +12,6 @@ enum SystemAudioMuteService {
     private static let defaultsKey = "flowdictate.pendingAudioRestore"
 
     private struct RestoreState: Codable {
-        /// Kept for decoding older crash-recovery blobs; restore always targets current default output.
         let deviceID: UInt32?
         let muted: UInt32?
         let volume: Float32?
@@ -28,8 +27,7 @@ enum SystemAudioMuteService {
 
         let previousMute = muteValue(deviceID: deviceID)
         let previousVolume = volumeValue(deviceID: deviceID)
-        // Snapshot levels only — device may change (BT disconnect) before endMute.
-        let state = RestoreState(deviceID: nil, muted: previousMute, volume: previousVolume)
+        let state = RestoreState(deviceID: deviceID, muted: previousMute, volume: previousVolume)
         activeRestore = state
         persist(state)
 
@@ -92,10 +90,11 @@ enum SystemAudioMuteService {
     }
 
     private static func applyRestore(_ state: RestoreState) {
-        // Always restore the *current* default output. Snapshot device IDs go stale
-        // when headphones disconnect mid-session.
-        let deviceID = defaultOutputDevice()
-        guard deviceID != kAudioObjectUnknown else { return }
+        let deviceID: AudioObjectID = state.deviceID ?? defaultOutputDevice()
+        guard deviceID != kAudioObjectUnknown, isAvailable(deviceID) else {
+            DiagnosticsLogger.shared.log("mute: original output unavailable; skipped restore on a different device")
+            return
+        }
         if let muted = state.muted {
             _ = setMuted(muted != 0, deviceID: deviceID)
         } else {
@@ -180,5 +179,16 @@ enum SystemAudioMuteService {
         )
         AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID)
         return deviceID
+    }
+
+    private static func isAvailable(_ deviceID: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var alive: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &alive) == noErr && alive != 0
     }
 }

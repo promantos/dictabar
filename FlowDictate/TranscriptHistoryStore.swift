@@ -19,6 +19,7 @@ final class TranscriptHistoryStore: ObservableObject {
     private let maxItems = 30
     private let maxTextChars = 8_000
     private let fileURL: URL
+    private let persistenceQueue = DispatchQueue(label: "app.flowdictate.transcript-history")
 
     private init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -73,10 +74,13 @@ final class TranscriptHistoryStore: ObservableObject {
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(items) else { return }
-        try? data.write(to: fileURL, options: .atomic)
-        try? FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: fileURL.path
-        )
+        let fileURL = fileURL
+        persistenceQueue.async {
+            try? data.write(to: fileURL, options: .atomic)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: fileURL.path
+            )
+        }
     }
 }

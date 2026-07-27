@@ -16,6 +16,7 @@ final class UpdateManager: ObservableObject {
 
     /// Max appcast body size (prevents memory blow-up from a malicious feed).
     private static let maxFeedBytes = 512 * 1024
+    private static let lastAutomaticCheckKey = "lastAutomaticUpdateCheck"
 
     /// Hosts allowed for the feed and download enclosure.
     private static let allowedHosts: Set<String> = [
@@ -36,6 +37,12 @@ final class UpdateManager: ObservableObject {
         includePrereleases: Bool,
         openWhenAvailable: Bool = true
     ) async {
+        if !openWhenAvailable,
+           let last = UserDefaults.standard.object(forKey: Self.lastAutomaticCheckKey) as? Date,
+           Date().timeIntervalSince(last) < 24 * 60 * 60 {
+            lastStatus = "Checked recently."
+            return
+        }
         isChecking = true
         lastStatus = "Checking for updates…"
         availableVersion = nil
@@ -50,17 +57,24 @@ final class UpdateManager: ObservableObject {
 
         do {
             var request = URLRequest(url: feedURL)
-            request.cachePolicy = .reloadIgnoringLocalCacheData
+            request.cachePolicy = openWhenAvailable ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy
             request.timeoutInterval = 20
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (bytes, response) = try await URLSession.shared.bytes(for: request)
             if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
                 lastStatus = "Update server returned HTTP \(http.statusCode)."
                 return
             }
-            if data.count > Self.maxFeedBytes {
-                lastStatus = "Update feed is too large."
-                DiagnosticsLogger.shared.log("update: feed too large bytes=\(data.count)")
-                return
+            var data = Data()
+            for try await byte in bytes {
+                guard data.count < Self.maxFeedBytes else {
+                    lastStatus = "Update feed is too large."
+                    DiagnosticsLogger.shared.log("update: feed exceeded size limit")
+                    return
+                }
+                data.append(byte)
+            }
+            if !openWhenAvailable {
+                UserDefaults.standard.set(Date(), forKey: Self.lastAutomaticCheckKey)
             }
 
             let items = AppcastParser.parse(data)
@@ -70,9 +84,12 @@ final class UpdateManager: ObservableObject {
             }
 
             let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
-            if AppcastParser.compareVersions(best.sparkleVersion ?? best.titleVersion, current) == .orderedDescending {
-                availableVersion = best.sparkleVersion ?? best.titleVersion
-                if let url = best.enclosureURL, Self.isAllowedHTTPS(url) {
+            let releaseVersion = best.sparkleShortVersion ?? best.titleVersion
+            if AppcastParser.compareVersions(releaseVersion, current) == .orderedDescending {
+                availableVersion = releaseVersion
+                if let url = best.enclosureURL,
+                   Self.isAllowedHTTPS(url),
+                   url.lastPathComponent == "FlowDictate-\(releaseVersion).zip" {
                     downloadURL = url
                     lastStatus = "Update \(availableVersion ?? "") available."
                     if openWhenAvailable {
@@ -190,8 +207,8 @@ private extension Array where Element == AppcastItem {
         let filtered = includePrereleases ? self : filter { !$0.isPrerelease }
         return filtered.max { a, b in
             AppcastParser.compareVersions(
-                a.sparkleVersion ?? a.titleVersion,
-                b.sparkleVersion ?? b.titleVersion
+                a.sparkleShortVersion ?? a.titleVersion,
+                b.sparkleShortVersion ?? b.titleVersion
             ) == .orderedAscending
         }
     }

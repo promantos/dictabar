@@ -30,15 +30,24 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    /// Default picker list — full catalog behind “Show all providers”.
-    static let featured: [SpeechProvider] = [
-        .openAI, .groq, .deepgram, .mistral, .elevenLabs, .assemblyAI, .openRouter, .custom
+    /// Quick Start only: free/easy providers with a normal API key.
+    static let onboarding: [SpeechProvider] = [
+        .groq, .deepgram, .mistral, .elevenLabs, .gladia, .assemblyAI
     ]
-
-    var isFeatured: Bool { Self.featured.contains(self) }
 
     var models: [String] {
         modelInfos.map(\.id)
+    }
+
+    /// JSON-only audio APIs require base64 and therefore an unavoidable memory copy.
+    /// Bound those requests; file/multipart providers retain their normal 25 MB ceiling.
+    var maximumUploadBytes: Int {
+        switch self {
+        case .googleCloud, .alibaba, .inworld, .cloudflare:
+            12 * 1024 * 1024
+        default:
+            25 * 1024 * 1024
+        }
     }
 
     var modelInfos: [SpeechModelInfo] {
@@ -61,7 +70,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         case .elevenLabs:
             modelList(["scribe_v2", "scribe_v1"], LanguageCatalog.whisper)
         case .assemblyAI:
-            modelList(["universal", "nano", "best"], LanguageCatalog.assembly)
+            modelList(["universal-3-pro", "universal-2"], LanguageCatalog.assembly)
         case .openRouter:
             [
                 SpeechModelInfo(id: "openai/whisper-large-v3", languageCodes: LanguageCatalog.whisper),
@@ -238,13 +247,37 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
 
     var group: ProviderGroup {
         switch self {
-        case .azureSpeech, .googleCloud, .amazonTranscribe, .alibaba, .cloudflare:
-            .cloud
+        case .groq, .deepgram, .mistral, .elevenLabs, .gladia, .speechmatics,
+                .assemblyAI, .soniox, .cartesia, .gradium, .modulate, .cohere,
+                .smallestAI, .inworld:
+            .freeEasy
+        case .openAI, .xAI:
+            .paidEasy
         case .openRouter, .fireworks, .together, .custom:
-            .routing
-        default:
-            .direct
+            .routers
+        case .googleCloud, .azureSpeech, .amazonTranscribe, .alibaba, .cloudflare:
+            .cloud
         }
+    }
+
+    /// Providers in picker order within each group (nicest first).
+    static func providers(in group: ProviderGroup) -> [SpeechProvider] {
+        let order: [SpeechProvider]
+        switch group {
+        case .freeEasy:
+            order = [
+                .groq, .deepgram, .mistral, .elevenLabs, .gladia, .speechmatics,
+                .assemblyAI, .soniox, .cartesia, .gradium, .modulate, .cohere,
+                .smallestAI, .inworld
+            ]
+        case .paidEasy:
+            order = [.openAI, .xAI]
+        case .routers:
+            order = [.openRouter, .fireworks, .together, .custom]
+        case .cloud:
+            order = [.googleCloud, .azureSpeech, .cloudflare, .alibaba, .amazonTranscribe]
+        }
+        return order.filter { $0.group == group }
     }
 
     var freeTier: String {
@@ -332,10 +365,21 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
 }
 
 enum ProviderGroup: String, CaseIterable, Identifiable {
-    case direct = "Direct APIs · easiest"
-    case cloud = "Cloud platforms"
-    case routing = "Routers & custom"
+    case freeEasy = "Free & trial · easy setup"
+    case paidEasy = "Paid · simple API key"
+    case routers = "Aggregators & custom"
+    case cloud = "Cloud platforms · advanced"
+
     var id: String { rawValue }
+
+    var localizedTitle: String {
+        switch self {
+        case .freeEasy: L10n.t("prov.group.free")
+        case .paidEasy: L10n.t("prov.group.paid")
+        case .routers: L10n.t("prov.group.routers")
+        case .cloud: L10n.t("prov.group.cloud")
+        }
+    }
 }
 
 struct SpeechModelInfo: Identifiable, Hashable {

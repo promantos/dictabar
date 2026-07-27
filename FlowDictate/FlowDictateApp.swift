@@ -33,6 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private var startStopMenuItem: NSMenuItem?
     private var cancelMenuItem: NSMenuItem?
+    private var retryMenuItem: NSMenuItem?
+    private var copyLastMenuItem: NSMenuItem?
     private var providerMenuItem: NSMenuItem?
     private var permissionsMenuItem: NSMenuItem?
     private var settingsMenuItem: NSMenuItem?
@@ -47,6 +49,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var quickStartChromeCounted = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let others = NSRunningApplication.runningApplications(
+            withBundleIdentifier: Bundle.main.bundleIdentifier ?? "app.flowdictate.FlowDictate"
+        ).filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+        if let existing = others.first {
+            existing.activate(options: [.activateAllWindows])
+            NSApp.terminate(nil)
+            return
+        }
+
         // Start as accessory (menu bar). Elevate to regular while any chrome window is open
         // so system permission sheets attach to a real activation context.
         NSApp.setActivationPolicy(.accessory)
@@ -63,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Launch quietly as a menu-bar app. Permission prompts are shown only after
         // an explicit user action (starting dictation or opening Permissions).
-        if permissionCenter.requiredReady {
+        if permissionCenter.isReady(needsAccessibility: settingsStore.autoInsert) {
             appState.completePermissionsOnboarding()
         }
 
@@ -149,10 +160,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             .store(in: &cancellables)
 
+        appState.$hasRetryableDictation
+            .sink { [weak self] available in
+                self?.retryMenuItem?.isEnabled = available
+            }
+            .store(in: &cancellables)
+
+        appState.$lastTranscript
+            .sink { [weak self] text in
+                self?.copyLastMenuItem?.isEnabled = !text.isEmpty
+            }
+            .store(in: &cancellables)
+
         appState.$showPermissionsOnboarding
             .sink { [weak self] show in
                 // Only surface the permissions sheet when still incomplete.
-                guard let self, show, !self.permissionCenter.requiredReady else { return }
+                guard let self, show,
+                      !self.permissionCenter.isReady(needsAccessibility: self.settingsStore.autoInsert) else { return }
                 self.showPermissionsOnboarding()
             }
             .store(in: &cancellables)
@@ -160,9 +184,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Auto-dismiss permissions window once mic + accessibility are granted.
         permissionCenter.$microphone
             .combineLatest(permissionCenter.$accessibility)
-            .sink { [weak self] mic, ax in
+            .sink { [weak self] _, _ in
                 guard let self else { return }
-                if mic.isGranted && ax.isGranted {
+                if self.permissionCenter.isReady(needsAccessibility: self.settingsStore.autoInsert) {
                     self.appState.completePermissionsOnboarding()
                     if self.onboardingWindow?.isVisible == true {
                         self.onboardingWindow?.close()
@@ -197,6 +221,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func refreshMenuTitles() {
         startStopMenuItem?.title = L10n.t("menu.startStop")
         cancelMenuItem?.title = L10n.t("menu.cancel")
+        retryMenuItem?.title = L10n.t("menu.retry")
+        copyLastMenuItem?.title = L10n.t("menu.copyLast")
         providerMenuItem?.title = "\(L10n.t("menu.provider")): \(settingsStore.provider.rawValue)"
         permissionsMenuItem?.title = L10n.t("section.permissions") + "…"
         settingsMenuItem?.title = L10n.t("menu.settings")
@@ -221,6 +247,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         cancelMenuItem = menuItem(L10n.t("menu.cancel"), action: #selector(cancelDictation), keyEquivalent: "")
         menu.addItem(startStopMenuItem!)
         menu.addItem(cancelMenuItem!)
+        retryMenuItem = menuItem(L10n.t("menu.retry"), action: #selector(retryLastDictation), keyEquivalent: "")
+        retryMenuItem?.isEnabled = appState.hasRetryableDictation
+        menu.addItem(retryMenuItem!)
+        copyLastMenuItem = menuItem(L10n.t("menu.copyLast"), action: #selector(copyLastTranscript), keyEquivalent: "")
+        copyLastMenuItem?.isEnabled = !appState.lastTranscript.isEmpty
+        menu.addItem(copyLastMenuItem!)
         menu.addItem(.separator())
         let providerItem = NSMenuItem(
             title: "\(L10n.t("menu.provider")): \(settingsStore.provider.rawValue)",
@@ -271,6 +303,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         dictationController.cancel()
     }
 
+    @objc private func retryLastDictation() {
+        dictationController.retryLastFailure()
+    }
+
+    @objc private func copyLastTranscript() {
+        guard !appState.lastTranscript.isEmpty else { return }
+        TextInsertionService.copy(appState.lastTranscript)
+    }
+
     @objc private func checkForUpdates() {
         Task {
             await UpdateManager.shared.check(
@@ -319,6 +360,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let root = PermissionsOnboardingView(
                 center: permissionCenter,
                 needsInputMonitoring: settingsStore.shortcutPreset.needsInputMonitoring,
+                needsAccessibility: settingsStore.autoInsert,
                 onContinue: { [weak self] in
                     // Close only — do not open Settings.
                     self?.appState.completePermissionsOnboarding()
@@ -357,7 +399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     guard let self else { return }
                     self.appState.completeQuickStart()
                     self.quickStartWindow?.close()
-                    if !self.permissionCenter.requiredReady {
+                    if !self.permissionCenter.isReady(needsAccessibility: self.settingsStore.autoInsert) {
                         self.appState.reopenPermissionsOnboarding()
                     }
                 },

@@ -29,7 +29,8 @@ struct SettingsView: View {
             )) { item in
                 HStack {
                     Label(item.localizedTitle, systemImage: item.icon)
-                    if item == .permissions, !permissionCenter.requiredReady {
+                    if item == .permissions,
+                       !permissionCenter.isReady(needsAccessibility: settingsStore.autoInsert) {
                         Spacer(minLength: 4)
                         Circle().fill(.orange).frame(width: 8, height: 8)
                     }
@@ -269,20 +270,13 @@ struct SettingsView: View {
             .padding(.horizontal, 2)
 
             SettingsCard(L10n.t("prov.connection")) {
-                Toggle(L10n.t("prov.showAll"), isOn: $settingsStore.showAllProviders)
+                // Full catalog, grouped: free → paid easy → routers → cloud.
                 Picker(L10n.t("prov.provider"), selection: $settingsStore.provider) {
-                    if settingsStore.showAllProviders {
-                        ForEach(ProviderGroup.allCases) { group in
-                            Section(group.rawValue) {
-                                ForEach(SpeechProvider.allCases.filter { $0.group == group }) {
-                                    Text($0.rawValue).tag($0)
-                                }
+                    ForEach(ProviderGroup.allCases) { group in
+                        Section(group.localizedTitle) {
+                            ForEach(SpeechProvider.providers(in: group)) { provider in
+                                Text(provider.rawValue).tag(provider)
                             }
-                        }
-                    } else {
-                        ForEach(SpeechProvider.featured) { Text($0.rawValue).tag($0) }
-                        if !settingsStore.provider.isFeatured {
-                            Text(settingsStore.provider.rawValue).tag(settingsStore.provider)
                         }
                     }
                 }
@@ -317,7 +311,11 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                 }
                 Divider()
-                if settingsStore.showAllProviders || settingsStore.provider.baseURLHint != nil || settingsStore.provider == .custom {
+                // Base URL only when non-default / advanced hosts matter.
+                if settingsStore.provider.baseURLHint != nil
+                    || settingsStore.provider == .custom
+                    || settingsStore.provider.group == .cloud
+                    || settingsStore.provider.group == .routers {
                     TextField(L10n.t("prov.baseURL"), text: $settingsStore.baseURL)
                         .textFieldStyle(.roundedBorder)
                     if let hint = settingsStore.provider.baseURLHint {
@@ -434,7 +432,8 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             PermissionsPanel(
                 center: permissionCenter,
-                needsInputMonitoring: settingsStore.shortcutPreset.needsInputMonitoring
+                needsInputMonitoring: settingsStore.shortcutPreset.needsInputMonitoring,
+                needsAccessibility: settingsStore.autoInsert
             )
             Text(settingsStore.shortcutPreset.needsInputMonitoring
                 ? L10n.t("perm.imNoteOn")
@@ -501,8 +500,14 @@ struct SettingsView: View {
     }
 
     private func saveKey() {
-        settingsStore.saveAPIKey()
-        keySavedFlash = true
+        do {
+            try settingsStore.saveAPIKey()
+            keySavedFlash = true
+        } catch {
+            testResult = L10n.tf("prov.testFail", error.localizedDescription)
+            keySavedFlash = false
+            return
+        }
         Task {
             try? await Task.sleep(for: .seconds(1.5))
             keySavedFlash = false
@@ -534,8 +539,7 @@ struct QuickStartView: View {
     var onOpenProviders: () -> Void
 
     @State private var flash = false
-
-    private let starters: [SpeechProvider] = [.openAI, .groq, .deepgram, .elevenLabs, .custom]
+    @State private var saveError = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -558,8 +562,13 @@ struct QuickStartView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 Picker(L10n.t("prov.provider"), selection: $settingsStore.provider) {
-                    ForEach(starters) { Text($0.rawValue).tag($0) }
+                    ForEach(SpeechProvider.onboarding) { provider in
+                        Text("\(provider.rawValue) · \(provider.freeTier)").tag(provider)
+                    }
                 }
+                Text(L10n.t("quick.freeHint"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 SecureField(L10n.t("prov.apiKey"), text: $settingsStore.apiKey)
                     .textFieldStyle(.roundedBorder)
                 HStack {
@@ -574,8 +583,19 @@ struct QuickStartView: View {
                 Text(L10n.t("quick.privacy"))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                if !saveError.isEmpty {
+                    Text(saveError)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
             }
             .padding(.horizontal, 28)
+            .onAppear {
+                // Ensure selection is one of the onboarding free providers.
+                if !SpeechProvider.onboarding.contains(settingsStore.provider) {
+                    settingsStore.provider = .groq
+                }
+            }
 
             Spacer(minLength: 12)
 
@@ -586,9 +606,15 @@ struct QuickStartView: View {
                 Button(L10n.t("quick.skip")) { onContinue() }
                     .buttonStyle(.bordered)
                 Button(L10n.t("quick.saveContinue")) {
-                    settingsStore.saveAPIKey()
-                    flash = true
-                    onContinue()
+                    do {
+                        try settingsStore.saveAPIKey()
+                        flash = true
+                        saveError = ""
+                        onContinue()
+                    } catch {
+                        flash = false
+                        saveError = error.localizedDescription
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)

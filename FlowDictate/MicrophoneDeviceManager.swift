@@ -9,6 +9,20 @@ struct MicrophoneDevice: Identifiable, Hashable {
 @MainActor
 final class MicrophoneDeviceManager: ObservableObject {
     @Published private(set) var devices: [MicrophoneDevice] = []
+    private var observers: [NSObjectProtocol] = []
+
+    init() {
+        for name in [AVCaptureDevice.wasConnectedNotification, AVCaptureDevice.wasDisconnectedNotification] {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.refresh() }
+            })
+        }
+        refresh()
+    }
 
     func refresh() {
         devices = AVCaptureDevice.DiscoverySession(deviceTypes: [.microphone], mediaType: .audio, position: .unspecified)

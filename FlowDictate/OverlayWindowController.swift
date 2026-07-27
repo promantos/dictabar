@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 final class OverlayWindowController {
     private var window: NSWindow?
+    private var host: NSHostingController<RecordingOverlay>?
     private var hideTask: Task<Void, Never>?
     private var timerTask: Task<Void, Never>?
     private var recordingStartedAt: Date?
@@ -52,7 +53,7 @@ final class OverlayWindowController {
         timerTask?.cancel()
         timerTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(250))
+                try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard let self, self.recordingStartedAt != nil else { return }
@@ -90,9 +91,10 @@ final class OverlayWindowController {
             window.ignoresMouseEvents = true
             window.hasShadow = true
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            self.host = host
             self.window = window
         } else {
-            window?.contentViewController = NSHostingController(rootView: view)
+            host?.rootView = view
         }
 
         var width: CGFloat = 200

@@ -20,10 +20,14 @@ final class DictationController {
     private var globalCancelMonitor: Any?
     private var localCancelMonitor: Any?
     private var lastStartAttempt = Date.distantPast
+    private var isRetryingRecovery = false
 
     init(appState: AppState, settingsStore: SettingsStore) {
         self.appState = appState
         self.settingsStore = settingsStore
+        FailedDictationStore.prune()
+        DebugRecordingStore.prune()
+        appState.hasRetryableDictation = FailedDictationStore.exists
     }
 
     // MARK: - Public API
@@ -74,12 +78,53 @@ final class DictationController {
         removeCancelMonitor()
         overlay.hide()
         cleanup(recordingURL)
-        cleanup(activeAudioURL)
+        if !isRetryingRecovery { cleanup(activeAudioURL) }
         recordingURL = nil
         activeAudioURL = nil
+        isRetryingRecovery = false
         startedAt = nil
         appState.dictationState = .idle
         DiagnosticsLogger.shared.log("dictation cancelled session=\(old)")
+    }
+
+    func retryLastFailure() {
+        guard canStart, let audioURL = FailedDictationStore.recordingURL else { return }
+        let id = UUID()
+        sessionID = id
+        appState.dictationState = .transcribing
+        isRetryingRecovery = true
+        appState.lastError = ""
+        installCancelMonitor()
+        showOverlay(.processing, L10n.t("overlay.transcribing"))
+
+        let providerKind = settingsStore.provider
+        let apiKey = settingsStore.apiKeyForTranscription()
+        let providerSettings = settingsStore.providerSettings
+        let autoInsert = settingsStore.autoInsert
+        let copyOnFail = settingsStore.copyOnInsertionFailure
+        let showOverlayFlag = settingsStore.showRecordingOverlay
+        let privatePreview = settingsStore.privatePreview
+        let showPreview = settingsStore.showTranscriptPreview
+        let insertedLabel = L10n.t("overlay.inserted")
+
+        pipelineTask?.cancel()
+        pipelineTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runPipeline(
+                sessionID: id,
+                recordedURL: audioURL,
+                finalizedAudioURL: audioURL,
+                providerKind: providerKind,
+                apiKey: apiKey,
+                providerSettings: providerSettings,
+                autoInsert: autoInsert,
+                copyOnFail: copyOnFail,
+                showOverlayFlag: showOverlayFlag,
+                privatePreview: privatePreview,
+                showPreview: showPreview,
+                insertedLabel: insertedLabel
+            )
+        }
     }
 
     // MARK: - Start
@@ -227,6 +272,7 @@ final class DictationController {
     private func runPipeline(
         sessionID id: UUID,
         recordedURL: URL,
+        finalizedAudioURL: URL? = nil,
         providerKind: SpeechProvider,
         apiKey: String,
         providerSettings: ProviderSettings,
@@ -237,6 +283,8 @@ final class DictationController {
         showPreview: Bool,
         insertedLabel: String
     ) async {
+        let pipelineStartedAt = Date()
+        var transcriptionCompleted = false
         defer {
             // Safety net: never leave UI stuck if something forgot to set state.
             if sessionID == id, appState.dictationState == .transcribing {
@@ -252,11 +300,22 @@ final class DictationController {
             guard sessionID == id else { return }
 
             // 1) Finalize audio (synchronous AVAudioRecorder.stop under the hood).
-            DiagnosticsLogger.shared.log("pipeline: stop recorder")
-            let audioURL = try await recorder.stop()
+            let audioURL: URL
+            if let finalizedAudioURL {
+                audioURL = finalizedAudioURL
+                DiagnosticsLogger.shared.log("pipeline: retry retained audio")
+            } else {
+                DiagnosticsLogger.shared.log("pipeline: stop recorder")
+                audioURL = try await recorder.stop()
+            }
             activeAudioURL = audioURL
             let size = (try? audioURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             DiagnosticsLogger.shared.log("pipeline: audio size=\(size)")
+            guard size <= providerKind.maximumUploadBytes else {
+                throw ProviderError.unsupported(
+                    "This recording is too large for \(providerKind.rawValue). Maximum upload size is \(providerKind.maximumUploadBytes / 1_048_576) MB."
+                )
+            }
 
             try Task.checkCancellation()
             guard sessionID == id else {
@@ -272,13 +331,14 @@ final class DictationController {
             showOverlay(.processing, "Transcribing…")
             DiagnosticsLogger.shared.log("pipeline: transcribe \(providerKind.rawValue) \(providerSettings.model)")
             let provider = ProviderRegistry.provider(for: providerKind)
-            let result = try await withTimeout(seconds: 75) {
+            let result = try await withTimeout(seconds: 150) {
                 try await provider.transcribe(
                     audioURL: audioURL,
                     settings: providerSettings,
                     apiKey: apiKey
                 )
             }
+            transcriptionCompleted = true
 
             try Task.checkCancellation()
             guard sessionID == id else {
@@ -329,15 +389,24 @@ final class DictationController {
             }
 
             removeCancelMonitor()
+            FailedDictationStore.clear()
+            appState.hasRetryableDictation = false
+            isRetryingRecovery = false
             cleanup(audioURL)
             activeAudioURL = nil
             appState.dictationState = .idle
-            DiagnosticsLogger.shared.log("pipeline: success")
+            let elapsed = Date().timeIntervalSince(pipelineStartedAt)
+            DiagnosticsLogger.shared.log(
+                "metric: outcome=success provider=\(providerKind.rawValue) latency_ms=\(Int(elapsed * 1000))"
+            )
         } catch is CancellationError {
             TextInsertionService.restoreClipboardIfNeeded()
-            cleanup(activeAudioURL)
-            cleanup(recordedURL)
+            if finalizedAudioURL == nil {
+                cleanup(activeAudioURL)
+                cleanup(recordedURL)
+            }
             activeAudioURL = nil
+            isRetryingRecovery = false
             removeCancelMonitor()
             overlay.hide()
             if sessionID == id {
@@ -346,9 +415,22 @@ final class DictationController {
             DiagnosticsLogger.shared.log("pipeline: cancelled")
         } catch {
             TextInsertionService.restoreClipboardIfNeeded()
-            cleanup(activeAudioURL)
-            cleanup(recordedURL)
+            if !transcriptionCompleted,
+               let source = activeAudioURL
+                    ?? (FileManager.default.fileExists(atPath: recordedURL.path) ? recordedURL : nil) {
+                do {
+                    try FailedDictationStore.save(source)
+                    appState.hasRetryableDictation = true
+                } catch {
+                    DiagnosticsLogger.shared.log("recovery: failed to retain audio \(error.localizedDescription)")
+                    cleanup(source)
+                }
+            } else {
+                cleanup(activeAudioURL)
+                cleanup(recordedURL)
+            }
             activeAudioURL = nil
+            isRetryingRecovery = false
             removeCancelMonitor()
             if sessionID == id {
                 if settingsStore.showRecordingOverlay {
@@ -361,7 +443,10 @@ final class DictationController {
                 }
                 fail(error)
             }
-            DiagnosticsLogger.shared.log("pipeline: error \(error.localizedDescription)")
+            let elapsed = Date().timeIntervalSince(pipelineStartedAt)
+            DiagnosticsLogger.shared.log(
+                "metric: outcome=failure provider=\(providerKind.rawValue) retryable=\((error as? ProviderError)?.isRetryable == true) latency_ms=\(Int(elapsed * 1000)) error=\(error.localizedDescription)"
+            )
         }
     }
 
@@ -485,8 +570,110 @@ final class DictationController {
     }
 
     private func cleanup(_ url: URL?) {
-        guard let url, !settingsStore.debugMode else { return }
+        guard let url else { return }
+        if settingsStore.debugMode {
+            DebugRecordingStore.retain(url)
+            return
+        }
         try? FileManager.default.removeItem(at: url)
+    }
+}
+
+private enum DebugRecordingStore {
+    private static var directory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FlowDictate/DebugRecordings", isDirectory: true)
+    }
+
+    static func retain(_ source: URL) {
+        guard FileManager.default.fileExists(atPath: source.path) else { return }
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let destination = directory
+                .appendingPathComponent("FlowDictate-\(UUID().uuidString)")
+                .appendingPathExtension("wav")
+            try FileManager.default.moveItem(at: source, to: destination)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+            prune()
+        } catch {
+            DiagnosticsLogger.shared.log("debug audio: retain failed \(error.localizedDescription)")
+            try? FileManager.default.removeItem(at: source)
+        }
+    }
+
+    static func prune() {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        let sorted = files.sorted {
+            let left = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let right = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return left > right
+        }
+        for file in sorted.dropFirst(10) {
+            try? FileManager.default.removeItem(at: file)
+        }
+        for file in sorted.prefix(10) {
+            let modified = (try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? nil
+            if let modified, Date().timeIntervalSince(modified) > 24 * 60 * 60 {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+}
+
+private enum FailedDictationStore {
+    private static let maxAge: TimeInterval = 24 * 60 * 60
+
+    private static var directory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("FlowDictate/Recovery", isDirectory: true)
+    }
+
+    static var recordingURL: URL? {
+        let url = directory.appendingPathComponent("last-failed.wav")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    static var exists: Bool { recordingURL != nil }
+
+    static func save(_ source: URL) throws {
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let destination = directory.appendingPathComponent("last-failed.wav")
+        if source.standardizedFileURL == destination.standardizedFileURL { return }
+        try? FileManager.default.removeItem(at: destination)
+        do {
+            try FileManager.default.moveItem(at: source, to: destination)
+        } catch {
+            try FileManager.default.copyItem(at: source, to: destination)
+            try? FileManager.default.removeItem(at: source)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        DiagnosticsLogger.shared.log("recovery: retained failed recording")
+    }
+
+    static func clear() {
+        if let recordingURL {
+            try? FileManager.default.removeItem(at: recordingURL)
+        }
+    }
+
+    static func prune() {
+        guard let url = recordingURL,
+              let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+              Date().timeIntervalSince(modified) > maxAge else { return }
+        try? FileManager.default.removeItem(at: url)
+        DiagnosticsLogger.shared.log("recovery: expired failed recording")
     }
 }
 

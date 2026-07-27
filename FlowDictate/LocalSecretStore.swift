@@ -8,6 +8,23 @@ import Security
 /// in memory after the first successful read so transcription never re-hits
 /// the Keychain on every keystroke.
 enum LocalSecretStore {
+    enum StoreError: LocalizedError {
+        case encoding
+        case keychain(OSStatus)
+        case verification
+
+        var errorDescription: String? {
+            switch self {
+            case .encoding:
+                "Could not encode API keys."
+            case let .keychain(status):
+                "Could not save the API key in Keychain (OSStatus \(status))."
+            case .verification:
+                "Keychain did not return the API key after saving it."
+            }
+        }
+    }
+
     private static let service = "app.flowdictate.FlowDictate"
     private static let account = "api-keys"
     private static let legacyFileName = "secrets.json"
@@ -18,7 +35,7 @@ enum LocalSecretStore {
 
     // MARK: - Public API
 
-    static func save(_ value: String, provider: SpeechProvider) {
+    static func save(_ value: String, provider: SpeechProvider) throws {
         lock.lock()
         defer { lock.unlock() }
         var values = loadUnlocked()
@@ -28,8 +45,12 @@ enum LocalSecretStore {
         } else {
             values[provider.rawValue] = trimmed
         }
-        cache = values
-        persistUnlocked(values)
+        try persistUnlocked(values)
+        cache = nil
+        guard loadUnlocked() == values else {
+            cache = values
+            throw StoreError.verification
+        }
     }
 
     static func read(provider: SpeechProvider) -> String {
@@ -60,9 +81,13 @@ enum LocalSecretStore {
         // One-time migration from the old plaintext Application Support file.
         if let legacy = readLegacyFile() {
             cache = legacy
-            persistUnlocked(legacy)
-            deleteLegacyFile()
-            DiagnosticsLogger.shared.log("keychain: migrated legacy secrets.json")
+            do {
+                try persistUnlocked(legacy)
+                deleteLegacyFile()
+                DiagnosticsLogger.shared.log("keychain: migrated legacy secrets.json")
+            } catch {
+                DiagnosticsLogger.shared.log("keychain: migration failed \(error.localizedDescription)")
+            }
             return legacy
         }
 
@@ -70,13 +95,13 @@ enum LocalSecretStore {
         return [:]
     }
 
-    private static func persistUnlocked(_ values: [String: String]) {
-        guard let data = try? JSONEncoder().encode(values) else { return }
+    private static func persistUnlocked(_ values: [String: String]) throws {
+        guard let data = try? JSONEncoder().encode(values) else { throw StoreError.encoding }
         if values.isEmpty {
             deleteKeychainItem()
             return
         }
-        writeKeychain(data)
+        try writeKeychain(data)
     }
 
     // MARK: - Keychain (single item)
@@ -114,7 +139,7 @@ enum LocalSecretStore {
         return nil
     }
 
-    private static func writeKeychain(_ data: Data) {
+    private static func writeKeychain(_ data: Data) throws {
         // Prefer update of existing item (either store).
         for useDP in [true, false] {
             let base = baseQuery(includeDataProtection: useDP)
@@ -169,6 +194,7 @@ enum LocalSecretStore {
         }
         if status != errSecSuccess {
             DiagnosticsLogger.shared.log("keychain add failed: \(status)")
+            throw StoreError.keychain(status)
         }
     }
 

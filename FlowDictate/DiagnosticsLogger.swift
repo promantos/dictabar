@@ -1,11 +1,15 @@
 import Foundation
+import OSLog
 
 final class DiagnosticsLogger: @unchecked Sendable {
     static let shared = DiagnosticsLogger()
 
     private let queue = DispatchQueue(label: "app.flowdictate.diagnostics")
     private let url: URL
-    private let alsoStdout = true
+    private let osLogger = Logger(subsystem: "app.flowdictate.FlowDictate", category: "diagnostics")
+    private let formatter = ISO8601DateFormatter()
+    private var handle: FileHandle?
+    private let maxFileBytes: UInt64 = 1_000_000
 
     private init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -18,26 +22,40 @@ final class DiagnosticsLogger: @unchecked Sendable {
     }
 
     func log(_ message: String) {
-        let redacted = Self.redact(message)
-        let line = "\(ISO8601DateFormatter().string(from: Date())) \(redacted)\n"
-        if alsoStdout {
-            fputs(line, stderr)
-        }
-        queue.sync {
+        queue.async {
+            let redacted = Self.redact(message)
+            let line = "\(self.formatter.string(from: Date())) \(redacted)\n"
+            self.osLogger.debug("\(redacted, privacy: .public)")
+            self.rotateIfNeeded()
             guard let data = line.data(using: .utf8) else { return }
-            if FileManager.default.fileExists(atPath: self.url.path),
-               let handle = try? FileHandle(forWritingTo: self.url) {
-                defer { try? handle.close() }
-                _ = try? handle.seekToEnd()
+            if self.handle == nil {
+                if !FileManager.default.fileExists(atPath: self.url.path) {
+                    try? data.write(to: self.url, options: .atomic)
+                    try? FileManager.default.setAttributes(
+                        [.posixPermissions: 0o600],
+                        ofItemAtPath: self.url.path
+                    )
+                    return
+                }
+                self.handle = try? FileHandle(forWritingTo: self.url)
+                _ = try? self.handle?.seekToEnd()
+            }
+            if let handle = self.handle {
                 try? handle.write(contentsOf: data)
             } else {
                 try? data.write(to: self.url, options: .atomic)
-                try? FileManager.default.setAttributes(
-                    [.posixPermissions: 0o600],
-                    ofItemAtPath: self.url.path
-                )
             }
         }
+    }
+
+    private func rotateIfNeeded() {
+        guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+              UInt64(size) >= maxFileBytes else { return }
+        try? handle?.close()
+        handle = nil
+        let previous = url.appendingPathExtension("1")
+        try? FileManager.default.removeItem(at: previous)
+        try? FileManager.default.moveItem(at: url, to: previous)
     }
 
     /// Strip secrets and truncate noisy payloads so logs never hold keys or clipboard text.
@@ -92,7 +110,10 @@ final class DiagnosticsLogger: @unchecked Sendable {
 
     func clear() {
         queue.sync {
+            try? self.handle?.close()
+            self.handle = nil
             try? FileManager.default.removeItem(at: self.url)
+            try? FileManager.default.removeItem(at: self.url.appendingPathExtension("1"))
         }
     }
 

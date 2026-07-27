@@ -25,9 +25,13 @@ enum TextInsertionService {
 
         switch settings.insertionMethod {
         case .paste:
+            if insertViaAccessibility(output) {
+                DiagnosticsLogger.shared.log("insertion: verified accessibility write")
+                return
+            }
             try await paste(output, restoreClipboard: settings.preserveClipboard)
         case .typing:
-            try type(output)
+            try await type(output)
         }
     }
 
@@ -88,7 +92,7 @@ enum TextInsertionService {
         // Give the front app time to read pasteboard for ⌘V.
         // Use non-throwing sleep so CancellationError does not skip defer restore logic incorrectly;
         // defer still runs on cancel, but we also restore immediately after a cancelled wait.
-        let slept = await sleepAllowingCancel(milliseconds: 550)
+        let slept = await sleepAllowingCancel(milliseconds: 180)
         if !slept {
             // Cancelled during wait — restore now (defer also covers this).
             DiagnosticsLogger.shared.log("clipboard: cancelled during paste wait; restoring")
@@ -100,9 +104,9 @@ enum TextInsertionService {
         // Mark first restore done; scrub loop may re-apply if target app re-writes pasteboard.
         // Keep pendingRestore until scrub finishes so cancel mid-scrub still restores.
 
-        // Keep scrubbing for ~2s in case the target app re-writes the pasteboard.
-        for pass in 2...6 {
-            let ok = await sleepAllowingCancel(milliseconds: 300)
+        // One bounded follow-up catches apps that read/rewrite pasteboard asynchronously.
+        for pass in 2...3 {
+            let ok = await sleepAllowingCancel(milliseconds: 120)
             if !ok {
                 DiagnosticsLogger.shared.log("clipboard: cancelled during scrub; restoring")
                 removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: pass)
@@ -194,11 +198,15 @@ enum TextInsertionService {
 
         static func capture(from pb: NSPasteboard) -> PasteboardBackup {
             var items: [[String: Data]] = []
-            for item in pb.pasteboardItems ?? [] {
+            var remainingBytes = 1_000_000
+            // ponytail: writeObjects previously crashed this app, so safely preserve
+            // one bounded primary item; AX insertion bypasses the clipboard entirely.
+            for item in (pb.pasteboardItems ?? []).prefix(1) {
                 var map: [String: Data] = [:]
                 for type in item.types {
-                    if let data = item.data(forType: type) {
+                    if let data = item.data(forType: type), data.count <= remainingBytes {
                         map[type.rawValue] = data
+                        remainingBytes -= data.count
                     }
                 }
                 if !map.isEmpty { items.append(map) }
@@ -240,19 +248,59 @@ enum TextInsertionService {
 
     // MARK: - Typing
 
-    private static func type(_ text: String) throws {
-        let source = CGEventSource(stateID: .hidSystemState)
-        guard let source else { throw InsertionError.eventSourceUnavailable }
-        for scalar in text.unicodeScalars {
-            let string = String(scalar)
-            var utf16 = Array(string.utf16)
-            let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-            let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-            down?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-            up?.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-            down?.post(tap: .cghidEventTap)
-            up?.post(tap: .cghidEventTap)
+    private static func type(_ text: String) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let source = CGEventSource(stateID: .hidSystemState)
+            guard let source else { throw InsertionError.eventSourceUnavailable }
+            for string in text.unicodeChunks(maxUTF16Count: 32) {
+                try Task.checkCancellation()
+                var units = Array(string.utf16)
+                let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+                let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+                down?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+                up?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+                down?.post(tap: .cghidEventTap)
+                up?.post(tap: .cghidEventTap)
+            }
+        }.value
+    }
+
+    private static func insertViaAccessibility(_ text: String) -> Bool {
+        let system = AXUIElementCreateSystemWide()
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            system,
+            kAXFocusedUIElementAttribute as CFString,
+            &focused
+        ) == .success,
+        let focused else { return false }
+        let element = focused as! AXUIElement
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFString
+        ) == .success
+    }
+}
+
+private extension String {
+    func unicodeChunks(maxUTF16Count: Int) -> [String] {
+        var result: [String] = []
+        var chunk = ""
+        var count = 0
+        for scalar in unicodeScalars {
+            let value = String(scalar)
+            let nextCount = value.utf16.count
+            if !chunk.isEmpty, count + nextCount > maxUTF16Count {
+                result.append(chunk)
+                chunk = ""
+                count = 0
+            }
+            chunk.append(value)
+            count += nextCount
         }
+        if !chunk.isEmpty { result.append(chunk) }
+        return result
     }
 }
 

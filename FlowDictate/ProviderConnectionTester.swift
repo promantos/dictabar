@@ -11,8 +11,15 @@ enum ProviderConnectionTester {
         defer { try? FileManager.default.removeItem(at: url) }
 
         let provider = ProviderRegistry.provider(for: settings.provider)
-        let result = try await withTimeout(seconds: 45) {
-            try await provider.transcribe(audioURL: url, settings: settings, apiKey: apiKey)
+        let result: TranscriptionResult
+        do {
+            result = try await withTimeout(seconds: 45) {
+                try await provider.transcribe(audioURL: url, settings: settings, apiKey: apiKey)
+            }
+        } catch ProviderError.noTranscript {
+            // Authentication, upload and model selection all succeeded; silence is
+            // expected to have no transcript and therefore proves connectivity.
+            return L10n.t("prov.testEmptyOK")
         }
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty {

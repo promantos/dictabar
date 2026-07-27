@@ -6,15 +6,55 @@ enum ProviderError: LocalizedError {
     case badURL
     case unsupported(String)
     case http(Int, String)
+    case network(String)
+    case timedOut
     case noTranscript
 
     var errorDescription: String? {
         switch self {
-        case .missingAPIKey: "Add an API key in Settings."
-        case .badURL: "Bad provider URL."
-        case let .unsupported(message): message
-        case let .http(status, body): "Provider error \(status): \(body)"
-        case .noTranscript: "Provider returned no transcript."
+        case .missingAPIKey: return "Add an API key in Settings."
+        case .badURL: return "Bad provider URL."
+        case let .unsupported(message): return message
+        case let .http(status, body):
+            let lower = body.lowercased()
+            if lower.contains("balance") || lower.contains("billing")
+                || lower.contains("credit") || lower.contains("quota exceeded") {
+                return "The provider reports insufficient balance, credits, or quota."
+            }
+            if lower.contains("deprecated") || lower.contains("model") && lower.contains("not found") {
+                return "The selected provider model is no longer available. Choose a current model in Settings."
+            }
+            switch status {
+            case 401, 403:
+                return "The provider rejected the API key. Check that the key belongs to this provider and region."
+            case 402:
+                return "The provider reports insufficient balance or credits."
+            case 408:
+                return "The provider timed out. The recording was kept so you can retry."
+            case 429:
+                return "The provider rate limit or quota was reached. FlowDictate retried automatically; try again shortly."
+            case 500...599:
+                return "The provider is temporarily unavailable (HTTP \(status)). The recording was kept so you can retry."
+            default:
+                return "Provider error \(status): \(body)"
+            }
+        case let .network(message):
+            return "Network error after automatic retries: \(message). The recording was kept so you can retry."
+        case .timedOut:
+            return "Transcription timed out after automatic retries. The recording was kept so you can retry."
+        case .noTranscript:
+            return "No speech was detected in the recording."
+        }
+    }
+
+    var isRetryable: Bool {
+        switch self {
+        case let .http(status, _):
+            [408, 425, 429, 500, 502, 503, 504].contains(status)
+        case .network, .timedOut:
+            true
+        default:
+            false
         }
     }
 }
@@ -83,20 +123,19 @@ private struct OpenAICompatibleTranscriptionProvider: TranscriptionProvider {
             throw ProviderError.badURL
         }
 
-        var form = MultipartFormData()
+        let form = try MultipartFormData()
         try form.addFile("file", url: audioURL, mimeType: "audio/wav")
-        form.addField("model", settings.model)
-        if let language = settings.language.apiCode { form.addField("language", language) }
-        form.addField("response_format", "json")
-        form.close()
+        try form.addField("model", settings.model)
+        if let language = settings.language.apiCode { try form.addField("language", language) }
+        try form.addField("response_format", "json")
+        try form.close()
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = form.data
+        try form.apply(to: &request)
 
-        let json = try await send(request)
+        let json = try await send(request, bodyFile: form.fileURL)
         let text = json["text"] as? String
         guard let text, !text.isEmpty else { throw ProviderError.noTranscript }
         return TranscriptionResult(text: text, detectedLanguage: json["language"] as? String, duration: json["duration"] as? TimeInterval, providerName: settings.provider.rawValue, modelName: settings.model)
@@ -109,17 +148,16 @@ struct SonioxTranscriptionProvider: TranscriptionProvider {
         let base = settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let uploadURL = URL(string: base + "/files") else { throw ProviderError.badURL }
 
-        var form = MultipartFormData()
+        let form = try MultipartFormData()
         try form.addFile("file", url: audioURL, mimeType: "audio/wav")
-        form.close()
+        try form.close()
 
         var upload = URLRequest(url: uploadURL)
         upload.httpMethod = "POST"
         upload.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        upload.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        upload.httpBody = form.data
+        try form.apply(to: &upload)
 
-        let uploaded = try await send(upload)
+        let uploaded = try await send(upload, bodyFile: form.fileURL)
         guard let fileID = uploaded["id"] as? String else { throw ProviderError.noTranscript }
         guard let createURL = URL(string: base + "/transcriptions") else { throw ProviderError.badURL }
         var body: [String: Any] = [
@@ -172,17 +210,16 @@ struct GladiaTranscriptionProvider: TranscriptionProvider {
         let base = settings.provider.sanitizedBaseURL(settings.baseURL)
         guard let uploadURL = URL(string: base + "/upload") else { throw ProviderError.badURL }
 
-        var form = MultipartFormData()
+        let form = try MultipartFormData()
         try form.addFile("audio", url: audioURL, mimeType: "audio/wav")
-        form.close()
+        try form.close()
 
         var upload = URLRequest(url: uploadURL)
         upload.httpMethod = "POST"
         upload.setValue(apiKey, forHTTPHeaderField: "x-gladia-key")
-        upload.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        upload.httpBody = form.data
+        try form.apply(to: &upload)
 
-        let uploaded = try await send(upload)
+        let uploaded = try await send(upload, bodyFile: form.fileURL)
         guard let audioURLString = uploaded["audio_url"] as? String else { throw ProviderError.noTranscript }
         guard let initURL = URL(string: base + "/pre-recorded") else { throw ProviderError.badURL }
 
@@ -247,18 +284,17 @@ struct SpeechmaticsTranscriptionProvider: TranscriptionProvider {
             ]
         ]
 
-        var form = MultipartFormData()
-        form.addField("config", String(data: try JSONSerialization.data(withJSONObject: config), encoding: .utf8) ?? "{}")
+        let form = try MultipartFormData()
+        try form.addField("config", String(data: try JSONSerialization.data(withJSONObject: config), encoding: .utf8) ?? "{}")
         try form.addFile("data_file", url: audioURL, mimeType: "audio/wav")
-        form.close()
+        try form.close()
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = form.data
+        try form.apply(to: &request)
 
-        let job = try await send(request)
+        let job = try await send(request, bodyFile: form.fileURL)
         guard let id = job["id"] as? String else { throw ProviderError.noTranscript }
         let base = settings.provider.sanitizedBaseURL(settings.baseURL)
         guard let transcriptURL = URL(string: base + "/jobs/\(id)/transcript?format=txt") else { throw ProviderError.badURL }
@@ -268,16 +304,17 @@ struct SpeechmaticsTranscriptionProvider: TranscriptionProvider {
             poll.timeoutInterval = 60
             poll.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
             try Task.checkCancellation()
-            let (data, response) = try await Network.session.data(for: poll)
+            let result = try await fetch(poll, bodyFile: nil)
             try Task.checkCancellation()
-            if data.count > Network.maxResponseBytes {
-                throw ProviderError.http(413, "Provider response too large.")
-            }
-            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let data = result.data
+            let status = result.response.statusCode
             if status == 200 {
                 let text = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !text.isEmpty else { throw ProviderError.noTranscript }
                 return TranscriptionResult(text: text, detectedLanguage: settings.language.apiCode, duration: nil, providerName: settings.provider.rawValue, modelName: settings.model)
+            }
+            if (500...599).contains(status) {
+                continue
             }
             if status != 202 && status != 404 {
                 throw ProviderError.http(status, DiagnosticsLogger.safeErrorBody(data))
@@ -304,9 +341,12 @@ struct DeepgramTranscriptionProvider: TranscriptionProvider {
         request.httpMethod = "POST"
         request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try Data(contentsOf: audioURL)
+        request.setValue(
+            String((try? audioURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0),
+            forHTTPHeaderField: "Content-Length"
+        )
 
-        let json = try await send(request)
+        let json = try await send(request, bodyFile: audioURL)
         let channel = ((json["results"] as? [String: Any])?["channels"] as? [[String: Any]])?.first
         let alternative = (channel?["alternatives"] as? [[String: Any]])?.first
         guard let text = alternative?["transcript"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
@@ -321,19 +361,18 @@ struct ElevenLabsTranscriptionProvider: TranscriptionProvider {
             throw ProviderError.badURL
         }
 
-        var form = MultipartFormData()
+        let form = try MultipartFormData()
         try form.addFile("file", url: audioURL, mimeType: "audio/wav")
-        form.addField("model_id", settings.model)
-        if let language = settings.language.apiCode { form.addField("language_code", language) }
-        form.close()
+        try form.addField("model_id", settings.model)
+        if let language = settings.language.apiCode { try form.addField("language_code", language) }
+        try form.close()
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
-        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = form.data
+        try form.apply(to: &request)
 
-        let json = try await send(request)
+        let json = try await send(request, bodyFile: form.fileURL)
         guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
         return TranscriptionResult(text: text, detectedLanguage: json["language_code"] as? String, duration: nil, providerName: settings.provider.rawValue, modelName: settings.model)
     }
@@ -353,10 +392,13 @@ struct AssemblyAITranscriptionProvider: TranscriptionProvider {
         upload.httpMethod = "POST"
         upload.setValue(apiKey, forHTTPHeaderField: "authorization")
         upload.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        upload.httpBody = try Data(contentsOf: audioURL)
+        upload.setValue(
+            String((try? audioURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0),
+            forHTTPHeaderField: "Content-Length"
+        )
         upload.timeoutInterval = 90
 
-        let uploadJSON = try await send(upload)
+        let uploadJSON = try await send(upload, bodyFile: audioURL)
         guard let remoteURL = uploadJSON["upload_url"] as? String else {
             throw ProviderError.noTranscript
         }
@@ -364,7 +406,7 @@ struct AssemblyAITranscriptionProvider: TranscriptionProvider {
         guard let transcriptURL = URL(string: base + "/v2/transcript") else { throw ProviderError.badURL }
         var body: [String: Any] = [
             "audio_url": remoteURL,
-            "speech_model": settings.model
+            "speech_models": [settings.model]
         ]
         if let code = settings.language.apiCode {
             body["language_code"] = code
@@ -419,22 +461,21 @@ struct OpenRouterTranscriptionProvider: TranscriptionProvider {
         let base = settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/audio/transcriptions") else { throw ProviderError.badURL }
 
-        var form = MultipartFormData()
+        let form = try MultipartFormData()
         try form.addFile("file", url: audioURL, mimeType: "audio/wav")
-        form.addField("model", settings.model)
-        if let language = settings.language.apiCode { form.addField("language", language) }
-        form.addField("response_format", "json")
-        form.close()
+        try form.addField("model", settings.model)
+        if let language = settings.language.apiCode { try form.addField("language", language) }
+        try form.addField("response_format", "json")
+        try form.close()
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
+        try form.apply(to: &request)
         // Optional but recommended by OpenRouter.
         request.setValue("FlowDictate", forHTTPHeaderField: "X-Title")
-        request.httpBody = form.data
 
-        let json = try await send(request)
+        let json = try await send(request, bodyFile: form.fileURL)
         let text = json["text"] as? String
         guard let text, !text.isEmpty else { throw ProviderError.noTranscript }
         return TranscriptionResult(
@@ -466,19 +507,18 @@ struct AzureSpeechTranscriptionProvider: TranscriptionProvider {
             : ["locales": [locale]]
         let definitionJSON = String(data: try JSONSerialization.data(withJSONObject: definition), encoding: .utf8) ?? "{\"locales\":[\"en-US\"]}"
 
-        var form = MultipartFormData()
+        let form = try MultipartFormData()
         try form.addFile("audio", url: audioURL, mimeType: "audio/wav")
-        form.addField("definition", definitionJSON)
-        form.close()
+        try form.addField("definition", definitionJSON)
+        try form.close()
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "Ocp-Apim-Subscription-Key")
-        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = form.data
+        try form.apply(to: &request)
         request.timeoutInterval = 90
 
-        let json = try await send(request)
+        let json = try await send(request, bodyFile: form.fileURL)
         // Response: { "combinedPhrases": [ { "text": "..." } ], "durationMilliseconds": ... }
         let phrases = json["combinedPhrases"] as? [[String: Any]]
         let text = phrases?
@@ -588,22 +628,21 @@ struct FireworksTranscriptionProvider: TranscriptionProvider {
         guard let url = URL(string: base + "/audio/transcriptions") else { throw ProviderError.badURL }
 
         // Fireworks model ids are often "whisper-v3" — pass through as selected.
-        var form = MultipartFormData()
+        let form = try MultipartFormData()
         try form.addFile("file", url: audioURL, mimeType: "audio/wav")
-        form.addField("model", settings.model)
-        if let language = settings.language.apiCode { form.addField("language", language) }
-        form.addField("response_format", "json")
-        form.close()
+        try form.addField("model", settings.model)
+        if let language = settings.language.apiCode { try form.addField("language", language) }
+        try form.addField("response_format", "json")
+        try form.close()
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = form.data
+        try form.apply(to: &request)
 
         let json: [String: Any]
         do {
-            json = try await send(request)
+            json = try await send(request, bodyFile: form.fileURL)
         } catch ProviderError.http(401, _) {
             throw ProviderError.unsupported(
                 "Fireworks rejected this API key. Create an inference API key from the Fireworks dashboard and save it for the Fireworks provider."
@@ -655,8 +694,11 @@ struct SmallestAITranscriptionProvider: TranscriptionProvider {
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try Data(contentsOf: audioURL)
-        let json = try await send(request)
+        request.setValue(
+            String((try? audioURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0),
+            forHTTPHeaderField: "Content-Length"
+        )
+        let json = try await send(request, bodyFile: audioURL)
         guard let text = json["transcription"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
         return result(text, settings, language: language)
     }
@@ -714,17 +756,16 @@ struct XAITranscriptionProvider: TranscriptionProvider {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
         let base = settings.provider.sanitizedBaseURL(settings.baseURL)
         guard let url = URL(string: base + "/stt") else { throw ProviderError.badURL }
-        var form = MultipartFormData()
-        form.addField("format", "true")
-        if let language = settings.language.apiCode { form.addField("language", language) }
+        let form = try MultipartFormData()
+        try form.addField("format", "true")
+        if let language = settings.language.apiCode { try form.addField("language", language) }
         try form.addFile("file", url: audioURL, mimeType: "audio/wav")
-        form.close()
+        try form.close()
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = form.data
-        let json = try await send(request)
+        try form.apply(to: &request)
+        let json = try await send(request, bodyFile: form.fileURL)
         guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
         return result(text, settings, language: json["language"] as? String, duration: json["duration"] as? Double)
     }
@@ -765,18 +806,17 @@ struct CartesiaTranscriptionProvider: TranscriptionProvider {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
         let base = settings.provider.sanitizedBaseURL(settings.baseURL)
         guard let url = URL(string: base + "/stt") else { throw ProviderError.badURL }
-        var form = MultipartFormData()
-        form.addField("model", settings.model)
-        if let language = settings.language.apiCode { form.addField("language", language) }
+        let form = try MultipartFormData()
+        try form.addField("model", settings.model)
+        if let language = settings.language.apiCode { try form.addField("language", language) }
         try form.addFile("file", url: audioURL, mimeType: "audio/wav")
-        form.close()
+        try form.close()
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("2026-03-01", forHTTPHeaderField: "Cartesia-Version")
-        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = form.data
-        let json = try await send(request)
+        try form.apply(to: &request)
+        let json = try await send(request, bodyFile: form.fileURL)
         guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
         return result(text, settings, language: json["language"] as? String, duration: json["duration"] as? Double)
     }
@@ -798,8 +838,11 @@ struct GradiumTranscriptionProvider: TranscriptionProvider {
         request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try Data(contentsOf: audioURL)
-        let data = try await sendData(request)
+        request.setValue(
+            String((try? audioURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0),
+            forHTTPHeaderField: "Content-Length"
+        )
+        let data = try await sendData(request, bodyFile: audioURL)
         let text = String(decoding: data, as: UTF8.self)
             .split(whereSeparator: \.isNewline)
             .compactMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
@@ -816,16 +859,15 @@ struct ModulateTranscriptionProvider: TranscriptionProvider {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
         let base = settings.provider.sanitizedBaseURL(settings.baseURL)
         guard let url = URL(string: base + "/velma-2-stt-batch") else { throw ProviderError.badURL }
-        var form = MultipartFormData()
-        form.addField("speaker_diarization", "false")
+        let form = try MultipartFormData()
+        try form.addField("speaker_diarization", "false")
         try form.addFile("upload_file", url: audioURL, mimeType: "audio/wav")
-        form.close()
+        try form.close()
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "X-API-Key")
-        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = form.data
-        let json = try await send(request)
+        try form.apply(to: &request)
+        let json = try await send(request, bodyFile: form.fileURL)
         guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
         return result(text, settings, duration: (json["duration_ms"] as? Double).map { $0 / 1000 })
     }
@@ -836,18 +878,17 @@ struct CohereTranscriptionProvider: TranscriptionProvider {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
         let base = settings.provider.sanitizedBaseURL(settings.baseURL)
         guard let url = URL(string: base + "/audio/transcriptions") else { throw ProviderError.badURL }
-        var form = MultipartFormData()
-        form.addField("model", settings.model)
+        let form = try MultipartFormData()
+        try form.addField("model", settings.model)
         // Cohere currently requires a language even though FlowDictate can auto-detect elsewhere.
-        form.addField("language", settings.language.apiCode ?? "en")
+        try form.addField("language", settings.language.apiCode ?? "en")
         try form.addFile("file", url: audioURL, mimeType: "audio/wav")
-        form.close()
+        try form.close()
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/form-data; boundary=\(form.boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = form.data
-        let json = try await send(request)
+        try form.apply(to: &request)
+        let json = try await send(request, bodyFile: form.fileURL)
         guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
         return result(text, settings, language: settings.language.apiCode)
     }
@@ -1143,8 +1184,8 @@ private enum Network {
     static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 75
-        config.waitsForConnectivity = false
+        config.timeoutIntervalForResource = 90
+        config.waitsForConnectivity = true
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         return URLSession(configuration: config, delegate: redirectGuard, delegateQueue: nil)
@@ -1169,7 +1210,7 @@ private enum Network {
     }
 }
 
-private func sendData(_ request: URLRequest) async throws -> Data {
+private func sendData(_ request: URLRequest, bodyFile: URL? = nil) async throws -> Data {
     var request = request
     if request.timeoutInterval <= 0 || request.timeoutInterval > 90 {
         request.timeoutInterval = 60
@@ -1180,22 +1221,124 @@ private func sendData(_ request: URLRequest) async throws -> Data {
           url.host != nil else {
         throw ProviderError.badURL
     }
-    try Task.checkCancellation()
-    let (data, response) = try await Network.session.data(for: request)
-    try Task.checkCancellation()
-    if data.count > Network.maxResponseBytes {
-        throw ProviderError.http(413, "Provider response too large (\(data.count) bytes).")
+    let maxAttempts = 3
+    for attempt in 0..<maxAttempts {
+        do {
+            try Task.checkCancellation()
+            let result = try await fetch(request, bodyFile: bodyFile)
+            try Task.checkCancellation()
+            let status = result.response.statusCode
+            if (200..<300).contains(status) {
+                return result.data
+            }
+            let error = ProviderError.http(status, DiagnosticsLogger.safeErrorBody(result.data))
+            guard error.isRetryable, attempt + 1 < maxAttempts else { throw error }
+            let delay = retryDelay(response: result.response, attempt: attempt)
+            DiagnosticsLogger.shared.log("network: retry status=\(status) attempt=\(attempt + 2) delay=\(delay)")
+            try await Task.sleep(for: .seconds(delay))
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as ProviderError {
+            throw error
+        } catch let error as URLError {
+            guard isTransient(error), attempt + 1 < maxAttempts else {
+                if error.code == .timedOut { throw ProviderError.timedOut }
+                throw ProviderError.network(error.localizedDescription)
+            }
+            let delay = backoff(attempt: attempt)
+            DiagnosticsLogger.shared.log("network: retry transport=\(error.code.rawValue) attempt=\(attempt + 2) delay=\(delay)")
+            try await Task.sleep(for: .seconds(delay))
+        } catch {
+            let ns = error as NSError
+            if ns.domain == NSURLErrorDomain {
+                let urlError = URLError(URLError.Code(rawValue: ns.code))
+                guard isTransient(urlError), attempt + 1 < maxAttempts else {
+                    throw ProviderError.network(error.localizedDescription)
+                }
+                try await Task.sleep(for: .seconds(backoff(attempt: attempt)))
+                continue
+            }
+            throw error
+        }
     }
-    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-    guard (200..<300).contains(status) else {
-        throw ProviderError.http(status, DiagnosticsLogger.safeErrorBody(data))
-    }
-    return data
+    throw ProviderError.network("Request failed")
 }
 
-private func send(_ request: URLRequest) async throws -> [String: Any] {
-    let data = try await sendData(request)
+private func send(_ request: URLRequest, bodyFile: URL? = nil) async throws -> [String: Any] {
+    let data = try await sendData(request, bodyFile: bodyFile)
     guard !data.isEmpty else { return [:] }
     let object = try JSONSerialization.jsonObject(with: data)
     return object as? [String: Any] ?? [:]
+}
+
+private func fetch(_ request: URLRequest, bodyFile: URL?) async throws -> (data: Data, response: HTTPURLResponse) {
+    if let bodyFile {
+        let (data, response) = try await Network.session.upload(for: request, fromFile: bodyFile)
+        guard data.count <= Network.maxResponseBytes else {
+            throw ProviderError.http(413, "Provider response too large.")
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw ProviderError.network("Invalid HTTP response")
+        }
+        return (data, http)
+    }
+
+    let (bytes, response) = try await Network.session.bytes(for: request)
+    guard let http = response as? HTTPURLResponse else {
+        throw ProviderError.network("Invalid HTTP response")
+    }
+    var data = Data()
+    let expected = http.expectedContentLength > 0 ? Int(http.expectedContentLength) : 0
+    data.reserveCapacity(min(Network.maxResponseBytes, expected))
+    for try await byte in bytes {
+        guard data.count < Network.maxResponseBytes else {
+            throw ProviderError.http(413, "Provider response too large.")
+        }
+        data.append(byte)
+    }
+    return (data, http)
+}
+
+private func retryDelay(response: HTTPURLResponse, attempt: Int) -> Double {
+    if let value = response.value(forHTTPHeaderField: "Retry-After") {
+        if let seconds = Double(value), seconds >= 0 {
+            return min(seconds, 15)
+        }
+        if let date = HTTPDateParser.parse(value) {
+            return min(max(0, date.timeIntervalSinceNow), 15)
+        }
+    }
+    return backoff(attempt: attempt)
+}
+
+private func backoff(attempt: Int) -> Double {
+    min(pow(2, Double(attempt)) + Double.random(in: 0...0.35), 8)
+}
+
+private func isTransient(_ error: URLError) -> Bool {
+    switch error.code {
+    case .timedOut, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+            .networkConnectionLost, .notConnectedToInternet, .resourceUnavailable,
+            .internationalRoamingOff, .callIsActive, .dataNotAllowed:
+        true
+    default:
+        false
+    }
+}
+
+private enum HTTPDateParser {
+    private static let lock = NSLock()
+    private static let formatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "EEE',' dd MMM yyyy HH':'mm':'ss z"
+        return formatter
+    }()
+
+    static func parse(_ value: String) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        return formatter.date(from: value)
+    }
 }

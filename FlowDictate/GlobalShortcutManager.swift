@@ -6,7 +6,6 @@ final class GlobalShortcutManager {
     private var eventHandlerRef: EventHandlerRef?
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var watchdogTimer: Timer?
     private var pressed = false
     private var modifierKeyCode: CGKeyCode?
     private let onPressed: () -> Void
@@ -136,15 +135,6 @@ final class GlobalShortcutManager {
             CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         }
         CGEvent.tapEnable(tap: eventTap, enable: true)
-        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
-            guard let self, let eventTap = self.eventTap,
-                  !CGEvent.tapIsEnabled(tap: eventTap) else { return }
-            self.pressed = false
-            CGEvent.tapEnable(tap: eventTap, enable: true)
-            DiagnosticsLogger.shared.log("shortcut: watchdog re-enabled event tap")
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        watchdogTimer = timer
         DiagnosticsLogger.shared.log("shortcut: modifier tap active key=\(keyCode)")
         return true
     }
@@ -208,8 +198,6 @@ final class GlobalShortcutManager {
     }
 
     private func stop() {
-        watchdogTimer?.invalidate()
-        watchdogTimer = nil
         if let hotKeyRef {
             UnregisterEventHotKey(hotKeyRef)
             self.hotKeyRef = nil

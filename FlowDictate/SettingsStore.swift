@@ -11,11 +11,16 @@ final class SettingsStore: ObservableObject {
             save()
         }
     }
-    @Published var model: String { didSet { defaults.set(model, forKey: Self.modelKey(provider)); save() } }
+    @Published var model: String {
+        didSet {
+            defaults.set(model, forKey: Self.modelKey(provider))
+            defaults.set(model, forKey: "model")
+        }
+    }
     @Published var baseURL: String {
         didSet {
             defaults.set(baseURL, forKey: Self.baseURLKey(provider))
-            save()
+            defaults.set(baseURL, forKey: "baseURL")
         }
     }
     @Published var language: OutputLanguage { didSet { save() } }
@@ -24,8 +29,6 @@ final class SettingsStore: ObservableObject {
     @Published var playSounds: Bool { didSet { save() } }
     /// Keep last N transcripts on disk (local only).
     @Published var saveTranscriptHistory: Bool { didSet { save() } }
-    /// Show full provider catalog instead of the short featured list.
-    @Published var showAllProviders: Bool { didSet { save() } }
     @Published var showRecordingOverlay: Bool { didSet { save() } }
     @Published var privatePreview: Bool { didSet { save() } }
     @Published var muteWhileRecording: Bool { didSet { save() } }
@@ -68,7 +71,7 @@ final class SettingsStore: ObservableObject {
     private let defaults = UserDefaults.standard
     private let keys = [
         "provider", "model", "baseURL", "language", "launchAtLogin", "showMenuBarIcon",
-        "playSounds", "saveTranscriptHistory", "showAllProviders",
+        "playSounds", "saveTranscriptHistory",
         "showRecordingOverlay", "privatePreview", "muteWhileRecording", "selectedMicrophoneID",
         "shortcutPreset", "shortcutKeyCode", "shortcutModifiers", "shortcutDisplay", "shortcutMode", "minimumRecordingDuration",
         "maximumRecordingDuration", "autoInsert", "insertionMethod", "preserveClipboard", "addTrailingSpace",
@@ -94,8 +97,7 @@ final class SettingsStore: ObservableObject {
         launchAtLogin = LaunchAtLoginService.isEnabled
         showMenuBarIcon = defaults.object(forKey: "showMenuBarIcon") as? Bool ?? true
         playSounds = defaults.bool(forKey: "playSounds")
-        saveTranscriptHistory = defaults.object(forKey: "saveTranscriptHistory") as? Bool ?? true
-        showAllProviders = defaults.bool(forKey: "showAllProviders")
+        saveTranscriptHistory = defaults.object(forKey: "saveTranscriptHistory") as? Bool ?? false
         showRecordingOverlay = defaults.object(forKey: "showRecordingOverlay") as? Bool ?? true
         privatePreview = defaults.object(forKey: "privatePreview") as? Bool ?? true
         muteWhileRecording = defaults.bool(forKey: "muteWhileRecording")
@@ -172,8 +174,8 @@ final class SettingsStore: ObservableObject {
         )
     }
 
-    func saveAPIKey() {
-        LocalSecretStore.save(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), provider: provider)
+    func saveAPIKey() throws {
+        try LocalSecretStore.save(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), provider: provider)
     }
 
     func loadAPIKey() {
@@ -185,7 +187,14 @@ final class SettingsStore: ObservableObject {
         if !current.isEmpty {
             // Persist draft if user typed but forgot Save — one write, still one Keychain item.
             if current != LocalSecretStore.read(provider: provider) {
-                LocalSecretStore.save(current, provider: provider)
+                do {
+                    try LocalSecretStore.save(current, provider: provider)
+                } catch {
+                    DiagnosticsLogger.shared.log("keychain: autosave failed \(error.localizedDescription)")
+                    // Keep the current in-memory key usable for this request; explicit Save still
+                    // reports persistence failures to the user.
+                    return current
+                }
             }
             return current
         }
@@ -196,7 +205,11 @@ final class SettingsStore: ObservableObject {
 
     func clearAPIKey() {
         apiKey = ""
-        LocalSecretStore.save("", provider: provider)
+        do {
+            try LocalSecretStore.save("", provider: provider)
+        } catch {
+            DiagnosticsLogger.shared.log("keychain: clear failed \(error.localizedDescription)")
+        }
     }
 
     func resetAll() {
@@ -215,8 +228,7 @@ final class SettingsStore: ObservableObject {
         launchAtLogin = LaunchAtLoginService.isEnabled
         showMenuBarIcon = true
         playSounds = false
-        saveTranscriptHistory = true
-        showAllProviders = false
+        saveTranscriptHistory = false
         showRecordingOverlay = true
         privatePreview = true
         muteWhileRecording = false
@@ -288,7 +300,6 @@ final class SettingsStore: ObservableObject {
         defaults.set(showMenuBarIcon, forKey: "showMenuBarIcon")
         defaults.set(playSounds, forKey: "playSounds")
         defaults.set(saveTranscriptHistory, forKey: "saveTranscriptHistory")
-        defaults.set(showAllProviders, forKey: "showAllProviders")
         defaults.set(showRecordingOverlay, forKey: "showRecordingOverlay")
         defaults.set(privatePreview, forKey: "privatePreview")
         defaults.set(muteWhileRecording, forKey: "muteWhileRecording")

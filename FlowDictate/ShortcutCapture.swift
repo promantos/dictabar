@@ -24,16 +24,13 @@ struct ShortcutCapture: NSViewRepresentable {
         Coordinator(parent: self)
     }
 
+    @MainActor
     final class Coordinator {
         var parent: ShortcutCapture
         private var monitor: Any?
 
         init(parent: ShortcutCapture) {
             self.parent = parent
-        }
-
-        deinit {
-            stop()
         }
 
         func syncMonitoring() {
@@ -47,29 +44,40 @@ struct ShortcutCapture: NSViewRepresentable {
         func install() {
             guard monitor == nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-                guard let self, parent.isRecording else { return event }
-
-                // Escape aborts capture without saving.
-                if event.type == .keyDown, event.keyCode == 53 {
-                    parent.isRecording = false
-                    return nil
+                let typeRaw = event.type.rawValue
+                let keyCode = event.keyCode
+                let flagsRaw = event.modifierFlags.rawValue
+                let characters = event.charactersIgnoringModifiers ?? ""
+                let consumed = MainActor.assumeIsolated {
+                    self?.handle(typeRaw: typeRaw, keyCode: keyCode, flagsRaw: flagsRaw, characters: characters) ?? false
                 }
-
-                guard event.type == .keyDown else { return event }
-
-                // Bare keys (no modifier) are almost always accidental while capturing.
-                let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
-                guard !mods.isEmpty else { return nil }
-
-                let shortcut = KeyboardShortcut(
-                    keyCode: UInt32(event.keyCode),
-                    carbonModifiers: carbonModifiers(from: event.modifierFlags),
-                    display: display(for: event)
-                )
-                parent.onCapture(shortcut)
-                parent.isRecording = false
-                return nil
+                return consumed ? nil : event
             }
+        }
+
+        private func handle(
+            typeRaw: UInt,
+            keyCode: UInt16,
+            flagsRaw: UInt,
+            characters: String
+        ) -> Bool {
+            guard parent.isRecording else { return false }
+            if typeRaw == NSEvent.EventType.keyDown.rawValue, keyCode == 53 {
+                parent.isRecording = false
+                return true
+            }
+            guard typeRaw == NSEvent.EventType.keyDown.rawValue else { return false }
+            let flags = NSEvent.ModifierFlags(rawValue: flagsRaw)
+            let mods = flags.intersection([.command, .option, .control, .shift])
+            guard !mods.isEmpty else { return true }
+            let shortcut = KeyboardShortcut(
+                keyCode: UInt32(keyCode),
+                carbonModifiers: carbonModifiers(from: flags),
+                display: display(flags: flags, characters: characters)
+            )
+            parent.onCapture(shortcut)
+            parent.isRecording = false
+            return true
         }
 
         func stop() {
@@ -88,13 +96,13 @@ struct ShortcutCapture: NSViewRepresentable {
             return result
         }
 
-        private func display(for event: NSEvent) -> String {
+        private func display(flags: NSEvent.ModifierFlags, characters: String) -> String {
             var parts: [String] = []
-            if event.modifierFlags.contains(.control) { parts.append("Control") }
-            if event.modifierFlags.contains(.option) { parts.append("Option") }
-            if event.modifierFlags.contains(.shift) { parts.append("Shift") }
-            if event.modifierFlags.contains(.command) { parts.append("Command") }
-            let key = (event.charactersIgnoringModifiers ?? "").uppercased()
+            if flags.contains(.control) { parts.append("Control") }
+            if flags.contains(.option) { parts.append("Option") }
+            if flags.contains(.shift) { parts.append("Shift") }
+            if flags.contains(.command) { parts.append("Command") }
+            let key = characters.uppercased()
             if !key.isEmpty { parts.append(key) }
             return parts.filter { !$0.isEmpty }.joined(separator: "-")
         }
