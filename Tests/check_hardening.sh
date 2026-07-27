@@ -29,6 +29,8 @@ grep -q 'restoreDefaultInputIfNeeded' FlowDictate/AudioRecorder.swift \
   || fail "selected input is not restored"
 grep -q 'size > 4_096, frames > 0' FlowDictate/AudioRecorder.swift \
   || fail "empty WAV regression guard missing"
+grep -q 'recovery: removed invalid empty recording' FlowDictate/DictationController.swift \
+  || fail "invalid failed-recording cleanup missing"
 grep -q 'Retry last dictation' FlowDictate/L10n.swift \
   || fail "failed-dictation recovery action missing"
 grep -q 'maxFileBytes' FlowDictate/DiagnosticsLogger.swift \

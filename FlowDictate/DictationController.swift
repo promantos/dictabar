@@ -636,9 +636,15 @@ private enum FailedDictationStore {
             .appendingPathComponent("FlowDictate/Recovery", isDirectory: true)
     }
 
+    private static var storedURL: URL {
+        directory.appendingPathComponent("last-failed.wav")
+    }
+
     static var recordingURL: URL? {
-        let url = directory.appendingPathComponent("last-failed.wav")
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        guard FileManager.default.fileExists(atPath: storedURL.path),
+              ((try? storedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 4_096
+        else { return nil }
+        return storedURL
     }
 
     static var exists: Bool { recordingURL != nil }
@@ -649,7 +655,7 @@ private enum FailedDictationStore {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
-        let destination = directory.appendingPathComponent("last-failed.wav")
+        let destination = storedURL
         if source.standardizedFileURL == destination.standardizedFileURL { return }
         try? FileManager.default.removeItem(at: destination)
         do {
@@ -663,17 +669,20 @@ private enum FailedDictationStore {
     }
 
     static func clear() {
-        if let recordingURL {
-            try? FileManager.default.removeItem(at: recordingURL)
-        }
+        try? FileManager.default.removeItem(at: storedURL)
     }
 
     static func prune() {
-        guard let url = recordingURL,
-              let modified = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
-              Date().timeIntervalSince(modified) > maxAge else { return }
-        try? FileManager.default.removeItem(at: url)
-        DiagnosticsLogger.shared.log("recovery: expired failed recording")
+        guard FileManager.default.fileExists(atPath: storedURL.path) else { return }
+        let values = try? storedURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        let isInvalid = (values?.fileSize ?? 0) <= 4_096
+        let isExpired = values?.contentModificationDate
+            .map { Date().timeIntervalSince($0) > maxAge } ?? true
+        guard isInvalid || isExpired else { return }
+        try? FileManager.default.removeItem(at: storedURL)
+        DiagnosticsLogger.shared.log(isInvalid
+            ? "recovery: removed invalid empty recording"
+            : "recovery: expired failed recording")
     }
 }
 
