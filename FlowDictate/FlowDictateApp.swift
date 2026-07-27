@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import SwiftUI
 
 @main
@@ -58,6 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
+        if ProcessInfo.processInfo.arguments.contains("--audio-smoke-test") {
+            runAudioSmokeTest()
+            return
+        }
+
         // Start as accessory (menu bar). Elevate to regular while any chrome window is open
         // so system permission sheets attach to a real activation context.
         NSApp.setActivationPolicy(.accessory)
@@ -65,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Recover from crash mid-recording: stale audio files + stuck system mute.
         AudioRecorder.cleanupStaleTempRecordings()
+        AudioRecorder.recoverInputDeviceIfNeeded()
         SystemAudioMuteService.recoverIfNeeded()
 
         shortcutManager.start(preset: settingsStore.shortcutPreset, customShortcut: settingsStore.shortcut)
@@ -97,6 +104,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         DiagnosticsLogger.shared.log(
             "FlowDictate launched \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") mic=\(permissionCenter.microphone) ax=\(permissionCenter.accessibility) input=\(permissionCenter.inputMonitoring)"
         )
+    }
+
+    /// Runnable real-hardware check used before installation/release. It never sends audio.
+    private func runAudioSmokeTest() {
+        NSApp.setActivationPolicy(.accessory)
+        AudioRecorder.recoverInputDeviceIfNeeded()
+        let recorder = AudioRecorder()
+        Task { @MainActor in
+            do {
+                _ = try await recorder.start(deviceID: settingsStore.selectedMicrophoneID)
+                try await Task.sleep(for: .seconds(2))
+                let finalized = try await recorder.stop()
+                let size = (try? finalized.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                try? FileManager.default.removeItem(at: finalized)
+                print("audio-smoke-test: ok bytes=\(size)")
+                fflush(stdout)
+                Darwin.exit(EXIT_SUCCESS)
+            } catch {
+                recorder.cancel()
+                print("audio-smoke-test: failed \(error.localizedDescription)")
+                fflush(stdout)
+                Darwin.exit(EXIT_FAILURE)
+            }
+        }
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

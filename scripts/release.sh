@@ -171,14 +171,12 @@ Download the zip, move FlowDictate.app to Applications.
 
 Updates feed (after Cloudflare upload): ${UPDATE_PUBLIC_BASE}/appcast.xml
 
-## 0.6.7 highlights
-- Reliable provider retries with quota, balance, model, timeout and network diagnostics
-- Recover and retry the last failed dictation
-- Streamed uploads and bounded responses for lower memory use
-- Per-device microphone capture without changing the macOS default input
-- Safer text insertion, clipboard restoration and Unicode typing fallback
-- Lower idle CPU usage, bounded logs and debug recordings
-- Developer ID, notarization and Gatekeeper release checks"
+## 0.6.8 highlights
+- Fix microphone recordings that contained a WAV header but no audio frames
+- Restore the proven AVAudioRecorder capture path
+- Validate actual audio frames before sending a recording to a provider
+- Restore a temporarily selected input device, including after an app crash
+- Keep the reliability, recovery and resource hardening from 0.6.7"
   fi
 fi
 

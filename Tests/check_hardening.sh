@@ -21,8 +21,14 @@ grep -q 'waitsForConnectivity = true' "$providers" || fail "connectivity waiting
   || fail "multipart recording is buffered in memory"
 grep -q 'fromFile: bodyFile' "$providers" || fail "file-backed uploads missing"
 
-! grep -q 'kAudioHardwarePropertyDefaultInputDevice' FlowDictate/AudioRecorder.swift \
-  || fail "recorder still mutates the global default input"
+grep -q 'AVAudioRecorder(url:' FlowDictate/AudioRecorder.swift \
+  || fail "proven AVAudioRecorder capture path missing"
+grep -q 'recoverInputDeviceIfNeeded' FlowDictate/AudioRecorder.swift \
+  || fail "input-device crash recovery missing"
+grep -q 'restoreDefaultInputIfNeeded' FlowDictate/AudioRecorder.swift \
+  || fail "selected input is not restored"
+grep -q 'size > 4_096, frames > 0' FlowDictate/AudioRecorder.swift \
+  || fail "empty WAV regression guard missing"
 grep -q 'Retry last dictation' FlowDictate/L10n.swift \
   || fail "failed-dictation recovery action missing"
 grep -q 'maxFileBytes' FlowDictate/DiagnosticsLogger.swift \

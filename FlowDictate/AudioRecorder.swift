@@ -1,18 +1,20 @@
-import AudioToolbox
 import AVFoundation
 import CoreAudio
 import Foundation
 
-/// Records the selected microphone to a mono 16 kHz LINEAR16 WAV without
-/// changing the user's system-wide default input device.
+/// Records microphone audio to the WAV format accepted by every FlowDictate provider.
+/// AVAudioRecorder is deliberately used here: it is the proven macOS capture path for
+/// this app and lets Core Audio own buffering, conversion and WAV finalization.
 @MainActor
 final class AudioRecorder {
-    private var engine: AVAudioEngine?
-    private var writer: AudioCaptureWriter?
+    private static let originalInputRecoveryKey = "audio.originalInputUID"
+
+    private var recorder: AVAudioRecorder?
     private var outputURL: URL?
     private var isRecording = false
+    private var previousDefaultInputUID: String?
 
-    /// Delete only genuinely stale files so a second active instance is never disrupted.
+    /// Delete only genuinely stale files so another active instance is never disrupted.
     static func cleanupStaleTempRecordings() {
         let fm = FileManager.default
         guard let items = try? fm.contentsOfDirectory(
@@ -20,6 +22,7 @@ final class AudioRecorder {
             includingPropertiesForKeys: [.contentModificationDateKey],
             options: [.skipsHiddenFiles]
         ) else { return }
+
         var removed = 0
         for url in items {
             let name = url.lastPathComponent
@@ -35,88 +38,81 @@ final class AudioRecorder {
         }
     }
 
+    /// Restore a device left selected if the previous process died during recording.
+    static func recoverInputDeviceIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard let uid = defaults.string(forKey: originalInputRecoveryKey) else { return }
+        if setDefaultInputDevice(uniqueID: uid) {
+            defaults.removeObject(forKey: originalInputRecoveryKey)
+            DiagnosticsLogger.shared.log("audio: recovered original input device")
+        }
+    }
+
     func start(deviceID: String) async throws -> URL {
         if isRecording { cancel() }
+
+        try selectInputIfNeeded(deviceID)
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("FlowDictate-\(UUID().uuidString)")
             .appendingPathExtension("wav")
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
+        let settings: [String: Any] = [
+            AVFormatIDKey: Int(kAudioFormatLinearPCM),
+            AVSampleRateKey: 16_000.0,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+            AVLinearPCMIsNonInterleaved: false
+        ]
 
-        if !deviceID.isEmpty {
-            guard let coreDevice = Self.coreAudioDeviceID(uniqueID: deviceID),
-                  let unit = input.audioUnit else {
-                throw AudioRecorderError.deviceUnavailable
-            }
-            var selected = coreDevice
-            let status = AudioUnitSetProperty(
-                unit,
-                kAudioOutputUnitProperty_CurrentDevice,
-                kAudioUnitScope_Global,
-                0,
-                &selected,
-                UInt32(MemoryLayout<AudioDeviceID>.size)
-            )
-            guard status == noErr else {
-                DiagnosticsLogger.shared.log("audio: select device failed status=\(status)")
-                throw AudioRecorderError.cannotStart("selected microphone could not be activated")
-            }
-        }
-
-        let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            throw AudioRecorderError.cannotStart("microphone returned an invalid audio format")
-        }
-        let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: 16_000,
-            channels: 1,
-            interleaved: true
-        )!
-        let writer = try AudioCaptureWriter(url: url, inputFormat: inputFormat, targetFormat: targetFormat)
-
-        input.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { buffer, _ in
-            writer.consume(buffer)
-        }
-
+        let recorder: AVAudioRecorder
         do {
-            engine.prepare()
-            try engine.start()
+            recorder = try AVAudioRecorder(url: url, settings: settings)
         } catch {
-            input.removeTap(onBus: 0)
-            try? FileManager.default.removeItem(at: url)
+            restoreDefaultInputIfNeeded()
             throw AudioRecorderError.cannotStart(error.localizedDescription)
         }
 
-        self.engine = engine
-        self.writer = writer
+        recorder.isMeteringEnabled = false
+        guard recorder.prepareToRecord() else {
+            restoreDefaultInputIfNeeded()
+            try? FileManager.default.removeItem(at: url)
+            throw AudioRecorderError.cannotStart("prepareToRecord returned false")
+        }
+        guard recorder.record() else {
+            restoreDefaultInputIfNeeded()
+            try? FileManager.default.removeItem(at: url)
+            throw AudioRecorderError.cannotStart(
+                "record() returned false — check microphone permission and input device"
+            )
+        }
+
+        self.recorder = recorder
         outputURL = url
         isRecording = true
-        DiagnosticsLogger.shared.log(
-            "audio: recording started rate=\(Int(inputFormat.sampleRate)) channels=\(inputFormat.channelCount)"
-        )
+        DiagnosticsLogger.shared.log("audio: recording started \(url.lastPathComponent)")
         return url
     }
 
     func stop() async throws -> URL {
-        guard isRecording, let engine, let writer, let url = outputURL else {
+        guard isRecording, let recorder, let url = outputURL else {
             throw AudioRecorderError.notRecording
         }
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        self.engine = nil
-        self.writer = nil
+
+        recorder.stop()
+        self.recorder = nil
         outputURL = nil
         isRecording = false
+        restoreDefaultInputIfNeeded()
 
-        if let error = writer.error {
-            try? FileManager.default.removeItem(at: url)
-            throw AudioRecorderError.cannotStart(error.localizedDescription)
-        }
+        // AVAudioRecorder finalizes the WAV asynchronously on some macOS versions.
+        try? await Task.sleep(for: .milliseconds(80))
+
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        DiagnosticsLogger.shared.log("audio: stopped size=\(size)")
-        guard size > 44 else {
+        let frames = (try? AVAudioFile(forReading: url).length) ?? 0
+        DiagnosticsLogger.shared.log("audio: stopped size=\(size) frames=\(frames)")
+        guard size > 4_096, frames > 0 else {
             try? FileManager.default.removeItem(at: url)
             throw AudioRecorderError.emptyRecording
         }
@@ -124,14 +120,70 @@ final class AudioRecorder {
     }
 
     func cancel() {
-        engine?.stop()
-        engine?.inputNode.removeTap(onBus: 0)
+        recorder?.stop()
         if let outputURL { try? FileManager.default.removeItem(at: outputURL) }
-        engine = nil
-        writer = nil
+        recorder = nil
         outputURL = nil
         isRecording = false
+        restoreDefaultInputIfNeeded()
         DiagnosticsLogger.shared.log("audio: cancelled")
+    }
+
+    private func selectInputIfNeeded(_ deviceID: String) throws {
+        guard !deviceID.isEmpty else { return }
+        guard Self.coreAudioDeviceID(uniqueID: deviceID) != nil else {
+            throw AudioRecorderError.deviceUnavailable
+        }
+        guard let current = Self.currentDefaultInputUID(), current != deviceID else { return }
+
+        UserDefaults.standard.set(current, forKey: Self.originalInputRecoveryKey)
+        guard Self.setDefaultInputDevice(uniqueID: deviceID) else {
+            UserDefaults.standard.removeObject(forKey: Self.originalInputRecoveryKey)
+            throw AudioRecorderError.cannotStart("selected microphone could not be activated")
+        }
+        previousDefaultInputUID = current
+    }
+
+    private func restoreDefaultInputIfNeeded() {
+        guard let uid = previousDefaultInputUID else { return }
+        previousDefaultInputUID = nil
+        if Self.setDefaultInputDevice(uniqueID: uid) {
+            UserDefaults.standard.removeObject(forKey: Self.originalInputRecoveryKey)
+            DiagnosticsLogger.shared.log("audio: restored original input device")
+        }
+    }
+
+    private static func currentDefaultInputUID() -> String? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        ) == noErr, deviceID != 0 else { return nil }
+        return uniqueID(for: deviceID)
+    }
+
+    @discardableResult
+    private static func setDefaultInputDevice(uniqueID: String) -> Bool {
+        guard let deviceID = coreAudioDeviceID(uniqueID: uniqueID) else { return false }
+        var selected = deviceID
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        return AudioObjectSetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject),
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<AudioDeviceID>.size),
+            &selected
+        ) == noErr
     }
 
     private static func coreAudioDeviceID(uniqueID: String) -> AudioDeviceID? {
@@ -152,82 +204,22 @@ final class AudioRecorder {
         guard AudioObjectGetPropertyData(
             AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &propertySize, &devices
         ) == noErr else { return nil }
-
-        return devices.first { device in
-            var uidAddress = AudioObjectPropertyAddress(
-                mSelector: kAudioDevicePropertyDeviceUID,
-                mScope: kAudioObjectPropertyScopeGlobal,
-                mElement: kAudioObjectPropertyElementMain
-            )
-            var value: Unmanaged<CFString>?
-            var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            let status = withUnsafeMutablePointer(to: &value) {
-                AudioObjectGetPropertyData(device, &uidAddress, 0, nil, &size, $0)
-            }
-            return status == noErr && value?.takeUnretainedValue() as String? == uniqueID
-        }
+        return devices.first { Self.uniqueID(for: $0) == uniqueID }
     }
-}
 
-private final class AudioCaptureWriter: @unchecked Sendable {
-    private let file: AVAudioFile
-    private let converter: AVAudioConverter
-    private let targetFormat: AVAudioFormat
-    private let lock = NSLock()
-    private var storedError: Error?
-
-    init(url: URL, inputFormat: AVAudioFormat, targetFormat: AVAudioFormat) throws {
-        file = try AVAudioFile(
-            forWriting: url,
-            settings: targetFormat.settings,
-            commonFormat: .pcmFormatInt16,
-            interleaved: true
+    private static func uniqueID(for device: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
         )
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw AudioRecorderError.cannotStart("audio format conversion is unavailable")
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = withUnsafeMutablePointer(to: &value) {
+            AudioObjectGetPropertyData(device, &address, 0, nil, &size, $0)
         }
-        self.converter = converter
-        self.targetFormat = targetFormat
-    }
-
-    var error: Error? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storedError
-    }
-
-    func consume(_ input: AVAudioPCMBuffer) {
-        guard error == nil else { return }
-        let ratio = targetFormat.sampleRate / input.format.sampleRate
-        let capacity = AVAudioFrameCount(ceil(Double(input.frameLength) * ratio) + 16)
-        guard let output = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: capacity) else { return }
-        var supplied = false
-        var conversionError: NSError?
-        let status = converter.convert(to: output, error: &conversionError) { _, state in
-            if supplied {
-                state.pointee = .noDataNow
-                return nil
-            }
-            supplied = true
-            state.pointee = .haveData
-            return input
-        }
-        guard status != .error, conversionError == nil else {
-            store(conversionError ?? AudioRecorderError.cannotStart("audio conversion failed"))
-            return
-        }
-        guard output.frameLength > 0 else { return }
-        do {
-            try file.write(from: output)
-        } catch {
-            store(error)
-        }
-    }
-
-    private func store(_ error: Error) {
-        lock.lock()
-        if storedError == nil { storedError = error }
-        lock.unlock()
+        guard status == noErr else { return nil }
+        return value?.takeUnretainedValue() as String?
     }
 }
 
