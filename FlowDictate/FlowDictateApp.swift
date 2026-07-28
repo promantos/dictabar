@@ -20,9 +20,8 @@ enum FlowDictateApp {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let appState = AppState()
     private let settingsStore = SettingsStore()
-    // Device discovery is only needed while Settings is open. Creating its
-    // AVCapture discovery session at launch needlessly wakes media services.
-    private lazy var microphoneManager = MicrophoneDeviceManager()
+    // Device discovery exists only while Settings is open.
+    private var microphoneManager: MicrophoneDeviceManager?
     private let permissionCenter = PermissionCenter.shared
     private lazy var dictationController = DictationController(appState: appState, settingsStore: settingsStore)
     private lazy var shortcutManager = GlobalShortcutManager(
@@ -206,11 +205,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return .terminateNow
     }
 
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showSettings()
-        return true
-    }
-
     // MARK: - Observations
 
     private func observeSettings() {
@@ -329,8 +323,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = NSImage(systemSymbolName: "mic.circle.fill", accessibilityDescription: "FlowDictate")
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.imagePosition = .imageOnly
+        item.button?.image = statusImage("mic.circle.fill")
 
         let menu = NSMenu()
         startStopMenuItem = menuItem(L10n.t("menu.startStop"), action: #selector(toggleDictation), keyEquivalent: "")
@@ -373,8 +368,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             symbol = "exclamationmark.circle.fill"
         default: symbol = "mic.circle.fill"
         }
-        statusItem?.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "FlowDictate")
+        statusItem?.button?.image = statusImage(symbol)
         statusItem?.button?.setAccessibilityLabel(appState.statusTitle)
+    }
+
+    private func statusImage(_ symbol: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "FlowDictate")
+        image?.isTemplate = true
+        return image
     }
 
     private func menuItem(_ title: String, action: Selector, keyEquivalent: String) -> NSMenuItem {
@@ -418,12 +419,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc func showSettings() {
         if settingsWindow == nil {
-            microphoneManager.refresh()
+            let microphones = MicrophoneDeviceManager()
+            microphones.refresh()
+            microphoneManager = microphones
             let host = NSHostingController(
                 rootView: SettingsView(
                     appState: appState,
                     settingsStore: settingsStore,
-                    microphones: microphoneManager
+                    microphones: microphones
                 )
                 .environment(\.locale, Locale(identifier: settingsStore.uiLanguage.resolvedCode))
             )
@@ -536,21 +539,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
-        if window === settingsWindow {
+        let closesSettings = window === settingsWindow
+        let closesOnboarding = window === onboardingWindow
+        let closesQuickStart = window === quickStartWindow
+        if closesSettings {
             settingsChromeCounted = false
         }
-        if window === onboardingWindow {
+        if closesOnboarding {
             onboardingChromeCounted = false
             appState.completePermissionsOnboarding()
         }
-        if window === quickStartWindow {
+        if closesQuickStart {
             quickStartChromeCounted = false
             // Closing the sheet counts as skip for this machine.
             appState.completeQuickStart()
         }
-        // Defer until after close so isVisible is accurate.
+        // Drop SwiftUI/AppKit ownership only after AppKit finishes its close callback.
         DispatchQueue.main.async { [weak self] in
-            self?.maybeReturnToAccessory()
+            guard let self else { return }
+            if closesSettings {
+                self.settingsWindow = nil
+                self.microphoneManager = nil
+            }
+            if closesOnboarding {
+                self.onboardingWindow = nil
+            }
+            if closesQuickStart {
+                self.quickStartWindow = nil
+            }
+            self.maybeReturnToAccessory()
         }
     }
 }

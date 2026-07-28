@@ -37,8 +37,10 @@ grep -q 'maxFileBytes' FlowDictate/DiagnosticsLogger.swift \
   || fail "diagnostics rotation missing"
 ! grep -q '\.toolTip' FlowDictate/FlowDictateApp.swift \
   || fail "menu-bar tooltip reintroduces idle AppKit wakeups"
-grep -q 'private lazy var microphoneManager' FlowDictate/FlowDictateApp.swift \
+grep -q 'private var microphoneManager: MicrophoneDeviceManager?' FlowDictate/FlowDictateApp.swift \
   || fail "microphone discovery is initialized while idle"
+grep -q 'microphoneManager = nil' FlowDictate/FlowDictateApp.swift \
+  || fail "microphone discovery survives after Settings closes"
 ! grep -q 'struct FlowDictateApp: App' FlowDictate/FlowDictateApp.swift \
   || fail "hidden SwiftUI scene is loaded while idle"
 
