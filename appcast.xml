@@ -2,22 +2,22 @@
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>Dictabar</title>
-    <link>https://raw.githubusercontent.com/promantos/flowdictate/main/appcast.xml</link>
+    <link>https://raw.githubusercontent.com/promantos/dictabar-updates/main/appcast.xml</link>
     <description>Dictabar release feed</description>
     <language>en</language>
 
     <!-- Newest item first. release.sh rewrites this file. -->
     <item>
-      <title>Dictabar 0.6.15</title>
-      <sparkle:version>31</sparkle:version>
-      <sparkle:shortVersionString>0.6.15</sparkle:shortVersionString>
-      <pubDate>Tue, 28 Jul 2026 18:42:40 +0000</pubDate>
+      <title>Dictabar 0.6.16</title>
+      <sparkle:version>32</sparkle:version>
+      <sparkle:shortVersionString>0.6.16</sparkle:shortVersionString>
+      <pubDate>Tue, 28 Jul 2026 18:56:09 +0000</pubDate>
       <enclosure
-        url="https://github.com/promantos/flowdictate/releases/download/v0.6.15/Dictabar-0.6.15.zip"
-        sparkle:version="31"
-        sparkle:shortVersionString="0.6.15"
-        length="13730214"
-        sparkle:edSignature="EJiRcFUy9x82vdvBKkfGZJN/05tbUdQhKHcx+1mqPcUOQQY8hswOUE7o0ZUFGlEvodzkmENF1YCtj/3x0vFHDA=="
+        url="https://github.com/promantos/dictabar-updates/releases/download/v0.6.16/Dictabar-0.6.16.zip"
+        sparkle:version="32"
+        sparkle:shortVersionString="0.6.16"
+        length="13730218"
+        sparkle:edSignature="Mzv4AjRZ7PynvFb2L/SNhhDss+rZa1rKNjDsm8yXYlOuTZhUXzCvQ76pFBZ06TDf3gzAy/MuND9lC/7OAhCcBQ=="
         type="application/octet-stream"
       />
     </item>

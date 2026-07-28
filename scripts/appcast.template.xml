@@ -2,7 +2,7 @@
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>Dictabar</title>
-    <link>https://raw.githubusercontent.com/promantos/flowdictate/main/appcast.xml</link>
+    <link>https://raw.githubusercontent.com/promantos/dictabar-updates/main/appcast.xml</link>
     <description>Dictabar release feed</description>
     <language>en</language>
 
@@ -13,7 +13,7 @@
       <sparkle:shortVersionString>__VERSION__</sparkle:shortVersionString>
       <pubDate>__PUBDATE__</pubDate>
       <enclosure
-        url="https://github.com/promantos/flowdictate/releases/download/v__VERSION__/Dictabar-__VERSION__.zip"
+        url="https://github.com/promantos/dictabar-updates/releases/download/v__VERSION__/Dictabar-__VERSION__.zip"
         sparkle:version="__BUILD__"
         sparkle:shortVersionString="__VERSION__"
         length="__LENGTH__"

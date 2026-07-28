@@ -39,6 +39,7 @@ APP_SRC="build/DerivedData/Build/Products/Release/Dictabar.app"
 ZIP="build/Dictabar-${VERSION}.zip"
 APPCAST="build/appcast.xml"
 NOTARY_PROFILE="${NOTARY_PROFILE:-Dictabar Notary}"
+UPDATE_REPO="promantos/dictabar-updates"
 DEVELOPER_ID=$(security find-identity -v -p codesigning \
   | sed -n 's/.*"\(Developer ID Application:[^"]*\)"/\1/p' \
   | head -n 1)
@@ -144,8 +145,8 @@ cp "$APPCAST" appcast.xml
 
 echo "  zip:     $ZIP ($LENGTH bytes)"
 echo "  appcast: $APPCAST"
-echo "  feed:    https://raw.githubusercontent.com/promantos/flowdictate/main/appcast.xml"
-echo "  package: https://github.com/promantos/flowdictate/releases/download/v${VERSION}/Dictabar-${VERSION}.zip"
+echo "  feed:    https://raw.githubusercontent.com/${UPDATE_REPO}/main/appcast.xml"
+echo "  package: https://github.com/${UPDATE_REPO}/releases/download/v${VERSION}/Dictabar-${VERSION}.zip"
 
 if [[ "$GITHUB" == "1" ]]; then
   if ! command -v gh >/dev/null 2>&1; then
@@ -153,12 +154,14 @@ if [[ "$GITHUB" == "1" ]]; then
     exit 1
   fi
   release_tag="v${VERSION}"
-  if gh release view "${release_tag}" >/dev/null 2>&1; then
+  if gh release view "${release_tag}" --repo "$UPDATE_REPO" >/dev/null 2>&1; then
     echo "-> Release ${release_tag} exists - uploading asset"
-    gh release upload "${release_tag}" "$ZIP" --clobber
+    gh release upload "${release_tag}" "$ZIP" --repo "$UPDATE_REPO" --clobber
   else
     echo "-> Creating GitHub release ${release_tag}"
     gh release create "${release_tag}" "$ZIP" \
+      --repo "$UPDATE_REPO" \
+      --target main \
       --title "Dictabar ${VERSION}" \
       --prerelease \
       --notes "Dictabar ${VERSION} (build ${BUILD}) test release.

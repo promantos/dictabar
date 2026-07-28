@@ -31,7 +31,7 @@
 	<key>NSSupportsSuddenTermination</key>
 	<false/>
 	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/promantos/flowdictate/main/appcast.xml</string>
+	<string>https://raw.githubusercontent.com/promantos/dictabar-updates/main/appcast.xml</string>
 	<key>SUEnableAutomaticChecks</key>
 	<true/>
 	<key>SUPublicEDKey</key>
