@@ -50,6 +50,30 @@ grep -q 'statusMenu?.popUp' FlowDictate/FlowDictateApp.swift \
 grep -q 'NSStatusBar.system.removeStatusItem(item)' FlowDictate/FlowDictateApp.swift \
   || fail "closed status menu does not return to cold idle"
 
+settings="FlowDictate/SettingsStore.swift"
+grep -q 'saveTranscriptHistory = defaults.object(forKey: "saveTranscriptHistory") as? Bool ?? true' "$settings" \
+  || fail "fresh installs do not inherit the release transcript-history setting"
+grep -q 'privatePreview = defaults.object(forKey: "privatePreview") as? Bool ?? false' "$settings" \
+  || fail "fresh installs do not inherit the release preview-privacy setting"
+grep -q 'muteWhileRecording = defaults.object(forKey: "muteWhileRecording") as? Bool ?? true' "$settings" \
+  || fail "fresh installs do not inherit the release audio-muting setting"
+grep -q 'minimumRecordingDuration = defaults.object(forKey: "minimumRecordingDuration") as? Double ?? 0.2' "$settings" \
+  || fail "fresh installs do not inherit the release minimum duration"
+grep -q 'maximumRecordingDuration = defaults.object(forKey: "maximumRecordingDuration") as? Double ?? 600' "$settings" \
+  || fail "fresh installs do not inherit the release maximum duration"
+grep -q 'addTrailingSpace = defaults.object(forKey: "addTrailingSpace") as? Bool ?? true' "$settings" \
+  || fail "fresh installs do not inherit the release trailing-space setting"
+grep -q 'copyOnInsertionFailure = defaults.object(forKey: "copyOnInsertionFailure") as? Bool ?? false' "$settings" \
+  || fail "fresh installs do not inherit the release insertion-failure setting"
+grep -q 'showProviderInOverlay = defaults.object(forKey: "showProviderInOverlay") as? Bool ?? true' "$settings" \
+  || fail "fresh installs do not inherit the release provider-overlay setting"
+grep -q 'showMicrophoneInOverlay = defaults.object(forKey: "showMicrophoneInOverlay") as? Bool ?? true' "$settings" \
+  || fail "fresh installs do not inherit the release microphone-overlay setting"
+grep -q 'provider = \.openAI' "$settings" \
+  || fail "reset must not copy the maintainer's selected provider"
+grep -q 'selectedMicrophoneID = ""' "$settings" \
+  || fail "factory defaults must not copy a machine-specific microphone"
+
 grep -q 'Developer ID Application' scripts/release.sh \
   || fail "release does not require Developer ID"
 grep -q 'notarytool submit' scripts/release.sh \

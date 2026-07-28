@@ -97,10 +97,10 @@ final class SettingsStore: ObservableObject {
         launchAtLogin = LaunchAtLoginService.isEnabled
         showMenuBarIcon = defaults.object(forKey: "showMenuBarIcon") as? Bool ?? true
         playSounds = defaults.bool(forKey: "playSounds")
-        saveTranscriptHistory = defaults.object(forKey: "saveTranscriptHistory") as? Bool ?? false
+        saveTranscriptHistory = defaults.object(forKey: "saveTranscriptHistory") as? Bool ?? true
         showRecordingOverlay = defaults.object(forKey: "showRecordingOverlay") as? Bool ?? true
-        privatePreview = defaults.object(forKey: "privatePreview") as? Bool ?? true
-        muteWhileRecording = defaults.bool(forKey: "muteWhileRecording")
+        privatePreview = defaults.object(forKey: "privatePreview") as? Bool ?? false
+        muteWhileRecording = defaults.object(forKey: "muteWhileRecording") as? Bool ?? true
         selectedMicrophoneID = defaults.string(forKey: "selectedMicrophoneID") ?? ""
         let rawPreset = defaults.string(forKey: "shortcutPreset") ?? ""
         // Migrate removed left-side presets → Right Command.
@@ -128,21 +128,21 @@ final class SettingsStore: ObservableObject {
         } else {
             cancelShortcut = .escape
         }
-        minimumRecordingDuration = defaults.object(forKey: "minimumRecordingDuration") as? Double ?? 0.3
-        // Default 5 minutes for first-run; user choice is persisted afterwards.
-        maximumRecordingDuration = defaults.object(forKey: "maximumRecordingDuration") as? Double ?? 300
+        minimumRecordingDuration = defaults.object(forKey: "minimumRecordingDuration") as? Double ?? 0.2
+        // Default 10 minutes for first-run; user choice is persisted afterwards.
+        maximumRecordingDuration = defaults.object(forKey: "maximumRecordingDuration") as? Double ?? 600
         autoInsert = defaults.object(forKey: "autoInsert") as? Bool ?? true
         insertionMethod = InsertionMethod(rawValue: defaults.string(forKey: "insertionMethod") ?? "") ?? .paste
         preserveClipboard = defaults.object(forKey: "preserveClipboard") as? Bool ?? true
-        addTrailingSpace = defaults.bool(forKey: "addTrailingSpace")
+        addTrailingSpace = defaults.object(forKey: "addTrailingSpace") as? Bool ?? true
         addTrailingNewline = defaults.bool(forKey: "addTrailingNewline")
-        copyOnInsertionFailure = defaults.object(forKey: "copyOnInsertionFailure") as? Bool ?? true
+        copyOnInsertionFailure = defaults.object(forKey: "copyOnInsertionFailure") as? Bool ?? false
         appearanceMode = AppAppearanceMode(rawValue: defaults.string(forKey: "appearanceMode") ?? "") ?? .system
         uiLanguage = AppUILanguage(rawValue: defaults.string(forKey: "uiLanguage") ?? "") ?? .system
         overlayPosition = OverlayPosition(rawValue: defaults.string(forKey: "overlayPosition") ?? "") ?? .topCenter
         showTimer = defaults.object(forKey: "showTimer") as? Bool ?? true
-        showProviderInOverlay = defaults.bool(forKey: "showProviderInOverlay")
-        showMicrophoneInOverlay = defaults.bool(forKey: "showMicrophoneInOverlay")
+        showProviderInOverlay = defaults.object(forKey: "showProviderInOverlay") as? Bool ?? true
+        showMicrophoneInOverlay = defaults.object(forKey: "showMicrophoneInOverlay") as? Bool ?? true
         showTranscriptPreview = defaults.bool(forKey: "showTranscriptPreview")
         automaticallyCheckUpdates = defaults.object(forKey: "automaticallyCheckUpdates") as? Bool ?? true
         includePrereleases = defaults.bool(forKey: "includePrereleases")
@@ -243,29 +243,29 @@ final class SettingsStore: ObservableObject {
         launchAtLogin = LaunchAtLoginService.isEnabled
         showMenuBarIcon = true
         playSounds = false
-        saveTranscriptHistory = false
+        saveTranscriptHistory = true
         showRecordingOverlay = true
-        privatePreview = true
-        muteWhileRecording = false
+        privatePreview = false
+        muteWhileRecording = true
         selectedMicrophoneID = ""
         shortcutPreset = .rightCommand
         shortcutMode = .toggle
         shortcut = .defaultDictation
         cancelShortcut = .escape
-        minimumRecordingDuration = 0.3
-        maximumRecordingDuration = 300
+        minimumRecordingDuration = 0.2
+        maximumRecordingDuration = 600
         autoInsert = true
         insertionMethod = .paste
         preserveClipboard = true
-        addTrailingSpace = false
+        addTrailingSpace = true
         addTrailingNewline = false
-        copyOnInsertionFailure = true
+        copyOnInsertionFailure = false
         appearanceMode = .system
         uiLanguage = .system
         overlayPosition = .topCenter
         showTimer = true
-        showProviderInOverlay = false
-        showMicrophoneInOverlay = false
+        showProviderInOverlay = true
+        showMicrophoneInOverlay = true
         showTranscriptPreview = false
         automaticallyCheckUpdates = true
         includePrereleases = false

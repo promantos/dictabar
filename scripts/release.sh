@@ -171,11 +171,11 @@ Download the zip, move FlowDictate.app to Applications.
 
 Updates feed (after Cloudflare upload): ${UPDATE_PUBLIC_BASE}/appcast.xml
 
-## 0.6.10 highlights
-- Keep the menu-bar provider synchronized with the provider selected in Settings
-- Preserve measured steady-state idle CPU at 0.00% and physical footprint at 14 MB
-- Release Settings windows and microphone discovery after closing Settings
-- Keep real microphone and live provider release checks from 0.6.9"
+## 0.6.11 highlights
+- Use the maintainer-tested non-secret settings as defaults for fresh installs and Reset All
+- Keep provider choice, API keys, microphone hardware and login-item state user-specific
+- Keep the menu-bar provider synchronized without adding background work
+- Preserve the zero-idle resource optimizations from 0.6.10"
   fi
 fi
 
