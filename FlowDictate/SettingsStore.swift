@@ -160,11 +160,26 @@ final class SettingsStore: ObservableObject {
     }
 
     var providerSettings: ProviderSettings {
-        ProviderSettings(
+        providerSettings(for: provider)
+    }
+
+    func providerSettings(for provider: SpeechProvider) -> ProviderSettings {
+        let savedModel = defaults.string(forKey: Self.modelKey(provider))
+        let resolvedModel = savedModel.flatMap { provider.models.contains($0) ? $0 : nil }
+            ?? provider.models[0]
+        let savedBaseURL = defaults.string(forKey: Self.baseURLKey(provider))
+            ?? provider.defaultBaseURL
+        let providerDefaults = SpeechProvider.allCases.map(\.defaultBaseURL)
+        let candidate = savedBaseURL.isEmpty
+            || (providerDefaults.contains(savedBaseURL) && savedBaseURL != provider.defaultBaseURL)
+            ? provider.defaultBaseURL
+            : savedBaseURL
+
+        return ProviderSettings(
             provider: provider,
-            model: model,
+            model: resolvedModel,
             // Always send a validated https URL to the network layer.
-            baseURL: provider.sanitizedBaseURL(baseURL),
+            baseURL: provider.sanitizedBaseURL(candidate),
             language: language,
             deepgramSmartFormat: deepgramSmartFormat,
             deepgramNumerals: deepgramNumerals,

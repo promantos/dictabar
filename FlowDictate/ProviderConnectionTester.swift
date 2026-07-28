@@ -3,12 +3,28 @@ import Foundation
 /// Sends a tiny silent WAV to the selected provider so users can verify key + model.
 enum ProviderConnectionTester {
     /// ~0.35s mono 16 kHz 16-bit LE silence (matches FlowDictate recorder format).
-    static func run(settings: ProviderSettings, apiKey: String) async throws -> String {
+    static func run(
+        settings: ProviderSettings,
+        apiKey: String,
+        audioURL: URL? = nil
+    ) async throws -> String {
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ProviderError.missingAPIKey
         }
-        let url = try writeSilentWAV(durationSeconds: 0.35)
-        defer { try? FileManager.default.removeItem(at: url) }
+        let url: URL
+        let removesAudio: Bool
+        if let audioURL {
+            url = audioURL
+            removesAudio = false
+        } else {
+            url = try writeSilentWAV(durationSeconds: 0.35)
+            removesAudio = true
+        }
+        defer {
+            if removesAudio {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
 
         let provider = ProviderRegistry.provider(for: settings.provider)
         let result: TranscriptionResult

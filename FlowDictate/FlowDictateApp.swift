@@ -4,12 +4,14 @@ import Darwin
 import SwiftUI
 
 @main
-struct FlowDictateApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-
-    var body: some Scene {
-        Settings {
-            EmptyView()
+enum FlowDictateApp {
+    @MainActor
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        withExtendedLifetime(delegate) {
+            app.run()
         }
     }
 }
@@ -18,7 +20,9 @@ struct FlowDictateApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let appState = AppState()
     private let settingsStore = SettingsStore()
-    private let microphoneManager = MicrophoneDeviceManager()
+    // Device discovery is only needed while Settings is open. Creating its
+    // AVCapture discovery session at launch needlessly wakes media services.
+    private lazy var microphoneManager = MicrophoneDeviceManager()
     private let permissionCenter = PermissionCenter.shared
     private lazy var dictationController = DictationController(appState: appState, settingsStore: settingsStore)
     private lazy var shortcutManager = GlobalShortcutManager(
@@ -59,7 +63,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             return
         }
 
-        if ProcessInfo.processInfo.arguments.contains("--audio-smoke-test") {
+        let arguments = ProcessInfo.processInfo.arguments
+        if let testIndex = arguments.firstIndex(of: "--provider-smoke-test") {
+            let audioURL = arguments.indices.contains(testIndex + 1)
+                ? URL(fileURLWithPath: arguments[testIndex + 1])
+                : nil
+            runProviderSmokeTest(audioURL: audioURL)
+            return
+        }
+
+        if arguments.contains("--audio-smoke-test") {
             runAudioSmokeTest()
             return
         }
@@ -127,6 +140,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 fflush(stdout)
                 Darwin.exit(EXIT_FAILURE)
             }
+        }
+    }
+
+    /// Live release check for every configured provider. Keys never leave the
+    /// normal provider request and are never printed.
+    private func runProviderSmokeTest(audioURL: URL?) {
+        NSApp.setActivationPolicy(.accessory)
+        Task { @MainActor in
+            if let audioURL, !FileManager.default.isReadableFile(atPath: audioURL.path) {
+                print("provider-smoke-test: audio file is not readable")
+                fflush(stdout)
+                Darwin.exit(EXIT_FAILURE)
+            }
+            var passed = 0
+            var skipped = 0
+            var failed = 0
+
+            for provider in SpeechProvider.allCases {
+                let apiKey = LocalSecretStore.read(provider: provider)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !apiKey.isEmpty else {
+                    skipped += 1
+                    print("provider-smoke-test: skip provider=\(provider.rawValue) reason=no-key")
+                    continue
+                }
+
+                do {
+                    _ = try await ProviderConnectionTester.run(
+                        settings: settingsStore.providerSettings(for: provider),
+                        apiKey: apiKey,
+                        audioURL: audioURL
+                    )
+                    passed += 1
+                    print("provider-smoke-test: pass provider=\(provider.rawValue)")
+                } catch {
+                    failed += 1
+                    let safeError = DiagnosticsLogger.redact(error.localizedDescription)
+                        .replacingOccurrences(of: "\n", with: " ")
+                    print("provider-smoke-test: fail provider=\(provider.rawValue) error=\(safeError)")
+                }
+                fflush(stdout)
+            }
+
+            print("provider-smoke-test: summary total=\(SpeechProvider.allCases.count) passed=\(passed) skipped=\(skipped) failed=\(failed)")
+            fflush(stdout)
+            Darwin.exit(failed == 0 && skipped == 0 ? EXIT_SUCCESS : (failed > 0 ? EXIT_FAILURE : 2))
         }
     }
 
@@ -315,7 +374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         default: symbol = "mic.circle.fill"
         }
         statusItem?.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "FlowDictate")
-        statusItem?.button?.toolTip = appState.statusTitle
+        statusItem?.button?.setAccessibilityLabel(appState.statusTitle)
     }
 
     private func menuItem(_ title: String, action: Selector, keyEquivalent: String) -> NSMenuItem {

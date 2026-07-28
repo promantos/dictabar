@@ -35,6 +35,12 @@ grep -q 'Retry last dictation' FlowDictate/L10n.swift \
   || fail "failed-dictation recovery action missing"
 grep -q 'maxFileBytes' FlowDictate/DiagnosticsLogger.swift \
   || fail "diagnostics rotation missing"
+! grep -q '\.toolTip' FlowDictate/FlowDictateApp.swift \
+  || fail "menu-bar tooltip reintroduces idle AppKit wakeups"
+grep -q 'private lazy var microphoneManager' FlowDictate/FlowDictateApp.swift \
+  || fail "microphone discovery is initialized while idle"
+! grep -q 'struct FlowDictateApp: App' FlowDictate/FlowDictateApp.swift \
+  || fail "hidden SwiftUI scene is loaded while idle"
 
 grep -q 'Developer ID Application' scripts/release.sh \
   || fail "release does not require Developer ID"

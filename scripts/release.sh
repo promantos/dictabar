@@ -171,12 +171,12 @@ Download the zip, move FlowDictate.app to Applications.
 
 Updates feed (after Cloudflare upload): ${UPDATE_PUBLIC_BASE}/appcast.xml
 
-## 0.6.8 highlights
-- Fix microphone recordings that contained a WAV header but no audio frames
-- Restore the proven AVAudioRecorder capture path
-- Validate actual audio frames before sending a recording to a provider
-- Restore a temporarily selected input device, including after an app crash
-- Keep the reliability, recovery and resource hardening from 0.6.7"
+## 0.6.9 highlights
+- Reduce measured idle CPU to 0.10% and physical footprint to 14 MB
+- Remove the hidden SwiftUI scene and defer microphone device discovery until Settings opens
+- Eliminate menu-bar tooltip tracking wakeups while preserving accessibility
+- Add repeatable idle resource, real microphone, and live provider connection checks
+- Keep the empty-recording hotfix and recovery hardening from 0.6.8"
   fi
 fi
 
