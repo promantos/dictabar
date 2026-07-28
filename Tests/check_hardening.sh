@@ -43,6 +43,12 @@ grep -q 'microphoneManager = nil' FlowDictate/FlowDictateApp.swift \
   || fail "microphone discovery survives after Settings closes"
 ! grep -q 'struct FlowDictateApp: App' FlowDictate/FlowDictateApp.swift \
   || fail "hidden SwiftUI scene is loaded while idle"
+grep -q 'refreshMenuTitles(provider: provider)' FlowDictate/FlowDictateApp.swift \
+  || fail "menu bar provider can lag behind Settings"
+grep -q 'statusMenu?.popUp' FlowDictate/FlowDictateApp.swift \
+  || fail "persistent status-item menu can keep AppKit tracking active"
+grep -q 'NSStatusBar.system.removeStatusItem(item)' FlowDictate/FlowDictateApp.swift \
+  || fail "closed status menu does not return to cold idle"
 
 grep -q 'Developer ID Application' scripts/release.sh \
   || fail "release does not require Developer ID"

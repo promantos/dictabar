@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     )
     private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
     private var startStopMenuItem: NSMenuItem?
     private var cancelMenuItem: NSMenuItem?
     private var retryMenuItem: NSMenuItem?
@@ -221,8 +222,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         settingsStore.$provider
             .combineLatest(settingsStore.$uiLanguage)
-            .sink { [weak self] _, _ in
-                self?.refreshMenuTitles()
+            .sink { [weak self] provider, _ in
+                // @Published emits before didSet. Defer so both the provider and
+                // localization state have committed before AppKit reads them.
+                DispatchQueue.main.async { [weak self] in
+                    self?.refreshMenuTitles(provider: provider)
+                }
             }
             .store(in: &cancellables)
 
@@ -302,12 +307,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func refreshMenuTitles() {
+    private func refreshMenuTitles(provider: SpeechProvider? = nil) {
         startStopMenuItem?.title = L10n.t("menu.startStop")
         cancelMenuItem?.title = L10n.t("menu.cancel")
         retryMenuItem?.title = L10n.t("menu.retry")
         copyLastMenuItem?.title = L10n.t("menu.copyLast")
-        providerMenuItem?.title = "\(L10n.t("menu.provider")): \(settingsStore.provider.rawValue)"
+        providerMenuItem?.title = "\(L10n.t("menu.provider")): \((provider ?? settingsStore.provider).rawValue)"
         permissionsMenuItem?.title = L10n.t("section.permissions") + "…"
         settingsMenuItem?.title = L10n.t("menu.settings")
         updatesMenuItem?.title = L10n.t("menu.updates")
@@ -326,6 +331,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.imagePosition = .imageOnly
         item.button?.image = statusImage("mic.circle.fill")
+        item.button?.target = self
+        item.button?.action = #selector(showStatusMenu(_:))
 
         let menu = NSMenu()
         startStopMenuItem = menuItem(L10n.t("menu.startStop"), action: #selector(toggleDictation), keyEquivalent: "")
@@ -355,8 +362,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(.separator())
         quitMenuItem = menuItem(L10n.t("menu.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitMenuItem!)
-        item.menu = menu
+        statusMenu = menu
         statusItem = item
+    }
+
+    @objc private func showStatusMenu(_ sender: NSStatusBarButton) {
+        refreshMenuTitles()
+        sender.highlight(true)
+        statusMenu?.popUp(positioning: nil, at: .zero, in: sender)
+        sender.highlight(false)
+        DispatchQueue.main.async { [weak self] in
+            self?.resetStatusItemAfterMenu()
+        }
+    }
+
+    private func resetStatusItemAfterMenu() {
+        guard let item = statusItem else { return }
+        statusMenu = nil
+        NSStatusBar.system.removeStatusItem(item)
+        statusItem = nil
+        setupMenuBar()
+        updateStatusItem(for: appState.dictationState)
     }
 
     private func updateStatusItem(for state: AppState.DictationState) {
