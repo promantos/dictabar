@@ -1,0 +1,657 @@
+import AppKit
+import Combine
+import Darwin
+import SwiftUI
+
+@main
+enum DictabarApp {
+    @MainActor
+    static func main() {
+        let app = NSApplication.shared
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        withExtendedLifetime(delegate) {
+            app.run()
+        }
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private let appState = AppState()
+    private let settingsStore = SettingsStore()
+    // Device discovery exists only while Settings is open.
+    private var microphoneManager: MicrophoneDeviceManager?
+    private let permissionCenter = PermissionCenter.shared
+    private lazy var dictationController = DictationController(appState: appState, settingsStore: settingsStore)
+    private lazy var shortcutManager = GlobalShortcutManager(
+        onPressed: { [weak self] in Task { @MainActor in self?.dictationController.shortcutPressed() } },
+        onReleased: { [weak self] in Task { @MainActor in self?.dictationController.shortcutReleased() } },
+        onError: { [weak self] message in
+            Task { @MainActor in
+                self?.appState.lastError = message
+                DiagnosticsLogger.shared.log("shortcut: \(message)")
+            }
+        }
+    )
+    private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
+    private var startStopMenuItem: NSMenuItem?
+    private var cancelMenuItem: NSMenuItem?
+    private var retryMenuItem: NSMenuItem?
+    private var copyLastMenuItem: NSMenuItem?
+    private var providerMenuItem: NSMenuItem?
+    private var permissionsMenuItem: NSMenuItem?
+    private var settingsMenuItem: NSMenuItem?
+    private var updatesMenuItem: NSMenuItem?
+    private var quitMenuItem: NSMenuItem?
+    private var settingsWindow: NSWindow?
+    private var onboardingWindow: NSWindow?
+    private var quickStartWindow: NSWindow?
+    private var cancellables = Set<AnyCancellable>()
+    private var settingsChromeCounted = false
+    private var onboardingChromeCounted = false
+    private var quickStartChromeCounted = false
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let others = NSRunningApplication.runningApplications(
+            withBundleIdentifier: Bundle.main.bundleIdentifier ?? "app.dictabar.Dictabar"
+        ).filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+        if let existing = others.first {
+            existing.activate(options: [.activateAllWindows])
+            NSApp.terminate(nil)
+            return
+        }
+
+        let arguments = ProcessInfo.processInfo.arguments
+        if let testIndex = arguments.firstIndex(of: "--provider-smoke-test") {
+            let audioURL = arguments.indices.contains(testIndex + 1)
+                ? URL(fileURLWithPath: arguments[testIndex + 1])
+                : nil
+            runProviderSmokeTest(audioURL: audioURL)
+            return
+        }
+
+        if arguments.contains("--audio-smoke-test") {
+            runAudioSmokeTest()
+            return
+        }
+
+        // Start as accessory (menu bar). Elevate to regular while any chrome window is open
+        // so system permission sheets attach to a real activation context.
+        NSApp.setActivationPolicy(.accessory)
+        setupMainMenu()
+        permissionCenter.refresh()
+
+        // Recover from crash mid-recording: stale audio files + stuck system mute.
+        AudioRecorder.cleanupStaleTempRecordings()
+        AudioRecorder.recoverInputDeviceIfNeeded()
+        SystemAudioMuteService.recoverIfNeeded()
+
+        shortcutManager.start(preset: settingsStore.shortcutPreset, customShortcut: settingsStore.shortcut)
+        observeSettings()
+        applyMenuBarIconVisibility()
+        applyAppearance(settingsStore.appearanceMode)
+
+        // Launch quietly as a menu-bar app. Permission prompts are shown only after
+        // an explicit user action (starting dictation or opening Permissions).
+        if permissionCenter.isReady(needsAccessibility: settingsStore.autoInsert) {
+            appState.completePermissionsOnboarding()
+        }
+
+        // First run: open Quick Start once (provider + key). Skip if already done.
+        if !appState.quickStartCompleted {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                self?.showQuickStart()
+            }
+        }
+
+        UpdateManager.shared.configure(automaticallyChecks: settingsStore.automaticallyCheckUpdates)
+
+        DiagnosticsLogger.shared.log(
+            "Dictabar launched \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") mic=\(permissionCenter.microphone) ax=\(permissionCenter.accessibility) input=\(permissionCenter.inputMonitoring)"
+        )
+    }
+
+    /// Runnable real-hardware check used before installation/release. It never sends audio.
+    private func runAudioSmokeTest() {
+        NSApp.setActivationPolicy(.accessory)
+        AudioRecorder.recoverInputDeviceIfNeeded()
+        let recorder = AudioRecorder()
+        Task { @MainActor in
+            do {
+                _ = try await recorder.start(deviceID: settingsStore.selectedMicrophoneID)
+                try await Task.sleep(for: .seconds(2))
+                let finalized = try await recorder.stop()
+                let size = (try? finalized.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                try? FileManager.default.removeItem(at: finalized)
+                print("audio-smoke-test: ok bytes=\(size)")
+                fflush(stdout)
+                Darwin.exit(EXIT_SUCCESS)
+            } catch {
+                recorder.cancel()
+                print("audio-smoke-test: failed \(error.localizedDescription)")
+                fflush(stdout)
+                Darwin.exit(EXIT_FAILURE)
+            }
+        }
+    }
+
+    /// Live release check for every configured provider. Keys never leave the
+    /// normal provider request and are never printed.
+    private func runProviderSmokeTest(audioURL: URL?) {
+        NSApp.setActivationPolicy(.accessory)
+        Task { @MainActor in
+            if let audioURL, !FileManager.default.isReadableFile(atPath: audioURL.path) {
+                print("provider-smoke-test: audio file is not readable")
+                fflush(stdout)
+                Darwin.exit(EXIT_FAILURE)
+            }
+            var passed = 0
+            var skipped = 0
+            var failed = 0
+
+            for provider in SpeechProvider.allCases {
+                let apiKey = LocalSecretStore.read(provider: provider)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !apiKey.isEmpty else {
+                    skipped += 1
+                    print("provider-smoke-test: skip provider=\(provider.rawValue) reason=no-key")
+                    continue
+                }
+
+                do {
+                    _ = try await ProviderConnectionTester.run(
+                        settings: settingsStore.providerSettings(for: provider),
+                        apiKey: apiKey,
+                        audioURL: audioURL
+                    )
+                    passed += 1
+                    print("provider-smoke-test: pass provider=\(provider.rawValue)")
+                } catch {
+                    failed += 1
+                    let safeError = DiagnosticsLogger.redact(error.localizedDescription)
+                        .replacingOccurrences(of: "\n", with: " ")
+                    print("provider-smoke-test: fail provider=\(provider.rawValue) error=\(safeError)")
+                }
+                fflush(stdout)
+            }
+
+            print("provider-smoke-test: summary total=\(SpeechProvider.allCases.count) passed=\(passed) skipped=\(skipped) failed=\(failed)")
+            fflush(stdout)
+            Darwin.exit(failed == 0 && skipped == 0 ? EXIT_SUCCESS : (failed > 0 ? EXIT_FAILURE : 2))
+        }
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if appState.isDictationActive {
+            let alert = NSAlert()
+            alert.messageText = L10n.t("quit.activeTitle")
+            alert.informativeText = L10n.t("quit.activeBody")
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: L10n.t("quit.quitAnyway"))
+            alert.addButton(withTitle: L10n.t("quit.stay"))
+            let response = alert.runModal()
+            if response == .alertSecondButtonReturn {
+                return .terminateCancel
+            }
+            dictationController.cancel()
+        }
+        return .terminateNow
+    }
+
+    // MARK: - Observations
+
+    private func observeSettings() {
+        settingsStore.$shortcutPreset
+            .combineLatest(settingsStore.$shortcut)
+            .dropFirst()
+            .sink { [weak self] preset, shortcut in
+                self?.shortcutManager.update(preset: preset, customShortcut: shortcut)
+            }
+            .store(in: &cancellables)
+
+        permissionCenter.$inputMonitoring
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] status in
+                guard let self, status.isGranted else { return }
+                self.shortcutManager.update(
+                    preset: self.settingsStore.shortcutPreset,
+                    customShortcut: self.settingsStore.shortcut
+                )
+            }
+            .store(in: &cancellables)
+
+        settingsStore.$provider
+            .combineLatest(settingsStore.$uiLanguage)
+            .sink { [weak self] provider, _ in
+                // @Published emits before didSet. Defer so both the provider and
+                // localization state have committed before AppKit reads them.
+                DispatchQueue.main.async { [weak self] in
+                    self?.refreshMenuTitles(provider: provider)
+                }
+            }
+            .store(in: &cancellables)
+
+        settingsStore.$showMenuBarIcon
+            .sink { [weak self] _ in
+                self?.applyMenuBarIconVisibility()
+            }
+            .store(in: &cancellables)
+
+        settingsStore.$appearanceMode
+            .sink { [weak self] mode in
+                self?.applyAppearance(mode)
+            }
+            .store(in: &cancellables)
+
+        appState.$dictationState
+            .sink { [weak self] state in
+                self?.updateStatusItem(for: state)
+            }
+            .store(in: &cancellables)
+
+        appState.$hasRetryableDictation
+            .sink { [weak self] available in
+                self?.retryMenuItem?.isEnabled = available
+            }
+            .store(in: &cancellables)
+
+        appState.$lastTranscript
+            .sink { [weak self] text in
+                self?.copyLastMenuItem?.isEnabled = !text.isEmpty
+            }
+            .store(in: &cancellables)
+
+        appState.$showPermissionsOnboarding
+            .sink { [weak self] show in
+                // Only surface the permissions sheet when still incomplete.
+                guard let self, show,
+                      !self.permissionCenter.isReady(needsAccessibility: self.settingsStore.autoInsert) else { return }
+                self.showPermissionsOnboarding()
+            }
+            .store(in: &cancellables)
+
+    }
+
+    // MARK: - Menu bar
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "Quit Dictabar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu
+        mainMenu.addItem(editItem)
+
+        NSApp.mainMenu = mainMenu
+    }
+
+    private func applyMenuBarIconVisibility() {
+        if settingsStore.showMenuBarIcon {
+            if statusItem == nil { setupMenuBar() }
+            statusItem?.isVisible = true
+        } else {
+            statusItem?.isVisible = false
+        }
+    }
+
+    private func applyAppearance(_ mode: AppAppearanceMode) {
+        switch mode {
+        case .system:
+            NSApp.appearance = nil
+        case .light:
+            NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark:
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+
+    private func refreshMenuTitles(provider: SpeechProvider? = nil) {
+        startStopMenuItem?.title = L10n.t("menu.startStop")
+        cancelMenuItem?.title = L10n.t("menu.cancel")
+        retryMenuItem?.title = L10n.t("menu.retry")
+        copyLastMenuItem?.title = L10n.t("menu.copyLast")
+        providerMenuItem?.title = "\(L10n.t("menu.provider")): \((provider ?? settingsStore.provider).rawValue)"
+        permissionsMenuItem?.title = L10n.t("section.permissions") + "…"
+        settingsMenuItem?.title = L10n.t("menu.settings")
+        updatesMenuItem?.title = L10n.t("menu.updates")
+        quitMenuItem?.title = L10n.t("menu.quit")
+    }
+
+    private func setupMenuBar() {
+        // NSStatusItem owns remote AppKit scenes on newer macOS versions. Keep one
+        // instance for the process lifetime; replacing it while its menu is tracked
+        // can abort inside NSSceneStatusItem/NSRemoteView.
+        guard statusItem == nil else {
+            refreshMenuTitles()
+            return
+        }
+
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        item.button?.imagePosition = .imageOnly
+        item.button?.image = statusImage("mic.circle.fill")
+        item.button?.target = self
+        item.button?.action = #selector(showStatusMenu(_:))
+
+        let menu = NSMenu()
+        startStopMenuItem = menuItem(L10n.t("menu.startStop"), action: #selector(toggleDictation), keyEquivalent: "")
+        cancelMenuItem = menuItem(L10n.t("menu.cancel"), action: #selector(cancelDictation), keyEquivalent: "")
+        menu.addItem(startStopMenuItem!)
+        menu.addItem(cancelMenuItem!)
+        retryMenuItem = menuItem(L10n.t("menu.retry"), action: #selector(retryLastDictation), keyEquivalent: "")
+        retryMenuItem?.isEnabled = appState.hasRetryableDictation
+        menu.addItem(retryMenuItem!)
+        copyLastMenuItem = menuItem(L10n.t("menu.copyLast"), action: #selector(copyLastTranscript), keyEquivalent: "")
+        copyLastMenuItem?.isEnabled = !appState.lastTranscript.isEmpty
+        menu.addItem(copyLastMenuItem!)
+        menu.addItem(.separator())
+        let providerItem = NSMenuItem(
+            title: "\(L10n.t("menu.provider")): \(settingsStore.provider.rawValue)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        providerMenuItem = providerItem
+        menu.addItem(providerItem)
+        permissionsMenuItem = menuItem(L10n.t("section.permissions") + "…", action: #selector(showPermissions), keyEquivalent: "")
+        settingsMenuItem = menuItem(L10n.t("menu.settings"), action: #selector(showSettings), keyEquivalent: ",")
+        updatesMenuItem = menuItem(L10n.t("menu.updates"), action: #selector(checkForUpdates), keyEquivalent: "")
+        menu.addItem(permissionsMenuItem!)
+        menu.addItem(settingsMenuItem!)
+        menu.addItem(updatesMenuItem!)
+        menu.addItem(.separator())
+        quitMenuItem = menuItem(L10n.t("menu.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        menu.addItem(quitMenuItem!)
+        statusMenu = menu
+        statusItem = item
+    }
+
+    @objc private func showStatusMenu(_ sender: NSStatusBarButton) {
+        refreshMenuTitles()
+        sender.highlight(true)
+        statusMenu?.popUp(positioning: nil, at: .zero, in: sender)
+        sender.highlight(false)
+        DispatchQueue.main.async { [weak self] in
+            self?.resetStatusItemAfterMenu()
+        }
+    }
+
+    private func resetStatusItemAfterMenu() {
+        guard let item = statusItem else { return }
+        statusMenu = nil
+        NSStatusBar.system.removeStatusItem(item)
+        statusItem = nil
+        setupMenuBar()
+        updateStatusItem(for: appState.dictationState)
+    }
+
+    private func updateStatusItem(for state: AppState.DictationState) {
+        let symbol: String
+        switch state {
+        case .recording: symbol = "mic.circle.fill"
+        case .transcribing, .starting: symbol = "waveform.circle.fill"
+        case .failed, .needsMicrophonePermission, .needsAccessibilityPermission:
+            symbol = "exclamationmark.circle.fill"
+        default: symbol = "mic.circle.fill"
+        }
+        statusItem?.button?.image = statusImage(symbol)
+        statusItem?.button?.setAccessibilityLabel(appState.statusTitle)
+    }
+
+    private func statusImage(_ symbol: String) -> NSImage? {
+        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Dictabar")
+        image?.isTemplate = true
+        return image
+    }
+
+    private func menuItem(_ title: String, action: Selector, keyEquivalent: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+        item.target = action == #selector(NSApplication.terminate(_:)) ? NSApp : self
+        return item
+    }
+
+    // MARK: - Actions
+
+    @objc private func toggleDictation() {
+        dictationController.toggle()
+    }
+
+    @objc private func cancelDictation() {
+        dictationController.cancel()
+    }
+
+    @objc private func retryLastDictation() {
+        dictationController.retryLastFailure()
+    }
+
+    @objc private func copyLastTranscript() {
+        guard !appState.lastTranscript.isEmpty else { return }
+        TextInsertionService.copy(appState.lastTranscript)
+    }
+
+    @objc private func checkForUpdates() {
+        Task {
+            await UpdateManager.shared.check(
+                includePrereleases: settingsStore.includePrereleases,
+                openWhenAvailable: true
+            )
+        }
+    }
+
+    @objc private func showPermissions() {
+        appState.selectedSettingsSection = SettingsSection.permissions.rawValue
+        showSettings()
+    }
+
+    @objc func showSettings() {
+        if settingsWindow == nil {
+            let microphones = MicrophoneDeviceManager()
+            microphones.refresh()
+            microphoneManager = microphones
+            let host = NSHostingController(
+                rootView: SettingsView(
+                    appState: appState,
+                    settingsStore: settingsStore,
+                    microphones: microphones
+                )
+                .environment(\.locale, Locale(identifier: settingsStore.uiLanguage.resolvedCode))
+            )
+            let window = NSWindow(contentViewController: host)
+            window.title = "Dictabar Settings"
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            settingsWindow = window
+        }
+
+        if !settingsChromeCounted {
+            settingsChromeCounted = true
+            elevateActivationPolicy()
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        centerSettingsWindow()
+        DispatchQueue.main.async { [weak self] in
+            self?.centerSettingsWindow()
+        }
+        permissionCenter.refresh()
+    }
+
+    private func centerSettingsWindow() {
+        guard let window = settingsWindow,
+              let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+        window.layoutIfNeeded()
+        let visible = screen.visibleFrame
+        window.setFrameOrigin(NSPoint(
+            x: visible.midX - window.frame.width / 2,
+            y: visible.midY - window.frame.height / 2
+        ))
+    }
+
+    private func showPermissionsOnboarding() {
+        if onboardingWindow == nil {
+            let root = PermissionsOnboardingView(
+                center: permissionCenter,
+                needsInputMonitoring: settingsStore.shortcutPreset.needsInputMonitoring,
+                needsAccessibility: settingsStore.autoInsert,
+                onContinue: { [weak self] in
+                    // Close only — do not open Settings.
+                    self?.appState.completePermissionsOnboarding()
+                    self?.onboardingWindow?.close()
+                }
+            )
+            let host = NSHostingController(rootView: root)
+            let window = NSWindow(contentViewController: host)
+            window.title = "Dictabar Setup"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            onboardingWindow = window
+        }
+        if !onboardingChromeCounted {
+            onboardingChromeCounted = true
+            elevateActivationPolicy()
+        }
+        onboardingWindow?.center()
+        onboardingWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        permissionCenter.refresh()
+    }
+
+    private func showQuickStart() {
+        appState.showQuickStart = true
+        if quickStartWindow == nil {
+            let root = QuickStartView(
+                settingsStore: settingsStore,
+                onContinue: { [weak self] in
+                    guard let self else { return }
+                    self.appState.completeQuickStart()
+                    self.quickStartWindow?.close()
+                    if !self.permissionCenter.isReady(needsAccessibility: self.settingsStore.autoInsert) {
+                        self.appState.reopenPermissionsOnboarding()
+                    }
+                },
+                onOpenProviders: { [weak self] in
+                    self?.appState.completeQuickStart()
+                    self?.quickStartWindow?.close()
+                    self?.appState.selectedSettingsSection = SettingsSection.providers.rawValue
+                    self?.showSettings()
+                }
+            )
+            let host = NSHostingController(rootView: root)
+            let window = NSWindow(contentViewController: host)
+            window.title = "Dictabar"
+            window.styleMask = [.titled, .closable]
+            window.isReleasedWhenClosed = false
+            window.delegate = self
+            quickStartWindow = window
+        }
+        if !quickStartChromeCounted {
+            quickStartChromeCounted = true
+            elevateActivationPolicy()
+        }
+        quickStartWindow?.center()
+        quickStartWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: - Activation policy (permission sheets need a regular app context)
+
+    private func elevateActivationPolicy() {
+        if NSApp.activationPolicy() != .regular {
+            NSApp.setActivationPolicy(.regular)
+        }
+    }
+
+    private func maybeReturnToAccessory() {
+        let settingsVisible = settingsWindow?.isVisible == true
+        let onboardingVisible = onboardingWindow?.isVisible == true
+        let quickStartVisible = quickStartWindow?.isVisible == true
+        if !settingsVisible && !onboardingVisible && !quickStartVisible {
+            NSApp.setActivationPolicy(.accessory)
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        let closesSettings = window === settingsWindow
+        let closesOnboarding = window === onboardingWindow
+        let closesQuickStart = window === quickStartWindow
+        if closesSettings {
+            settingsChromeCounted = false
+        }
+        if closesOnboarding {
+            onboardingChromeCounted = false
+            appState.completePermissionsOnboarding()
+        }
+        if closesQuickStart {
+            quickStartChromeCounted = false
+            // Closing the sheet counts as skip for this machine.
+            appState.completeQuickStart()
+        }
+        // Drop SwiftUI/AppKit ownership only after AppKit finishes its close callback.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if closesSettings {
+                self.settingsWindow = nil
+                self.microphoneManager = nil
+            }
+            if closesOnboarding {
+                self.onboardingWindow = nil
+            }
+            if closesQuickStart {
+                self.quickStartWindow = nil
+            }
+            self.maybeReturnToAccessory()
+        }
+    }
+}
+
+/// Shared with SettingsView sidebar tags.
+enum SettingsSection: String, CaseIterable, Identifiable {
+    case general = "General"
+    case dictation = "Dictation"
+    case providers = "Providers"
+    case localModels = "Local Models"
+    case history = "History"
+    case permissions = "Permissions"
+    case updates = "Updates"
+    case advanced = "Advanced"
+
+    var id: String { rawValue }
+    var localizedTitle: String {
+        switch self {
+        case .general: L10n.t("section.general")
+        case .dictation: L10n.t("section.dictation")
+        case .providers: L10n.t("section.providers")
+        case .localModels: L10n.t("section.localModels")
+        case .history: L10n.t("section.history")
+        case .permissions: L10n.t("section.permissions")
+        case .updates: L10n.t("section.updates")
+        case .advanced: L10n.t("section.advanced")
+        }
+    }
+    var icon: String {
+        switch self {
+        case .general: "gearshape"
+        case .dictation: "mic"
+        case .providers: "network"
+        case .localModels: "internaldrive"
+        case .history: "clock.arrow.circlepath"
+        case .permissions: "lock.shield"
+        case .updates: "arrow.clockwise"
+        case .advanced: "wrench.and.screwdriver"
+        }
+    }
+}

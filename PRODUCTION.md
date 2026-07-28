@@ -1,4 +1,4 @@
-# FlowDictate — production: signing, updates, Keychain
+# Dictabar — production: signing, updates, local secrets
 
 ## 1. Code signing (Apple Developer account)
 
@@ -16,11 +16,11 @@ For a menu-bar utility distributed yourself (R2 / website), use **Developer ID A
 
 ### One-time setup in Xcode
 
-1. Open `FlowDictate.xcodeproj` in **full Xcode** (not only Command Line Tools).
-2. Select the **FlowDictate** target → **Signing & Capabilities**.
+1. Open `Dictabar.xcodeproj` in **full Xcode** (not only Command Line Tools).
+2. Select the **Dictabar** target → **Signing & Capabilities**.
 3. Enable **Automatically manage signing**.
 4. Choose your **Team** (the one linked to your developer account).
-5. Bundle ID is `app.flowdictate.FlowDictate` — register it once in [developer.apple.com](https://developer.apple.com/account/resources/identifiers/list) if Xcode doesn’t create it.
+5. Bundle ID is `app.dictabar.Dictabar` — register it once in [developer.apple.com](https://developer.apple.com/account/resources/identifiers/list) if Xcode doesn’t create it.
 6. Keep **Hardened Runtime** on (already set in the project).
 
 ### Archive & export (Developer ID build)
@@ -34,10 +34,10 @@ Product → Archive
 Or CLI (after Xcode is selected with `xcode-select -s /Applications/Xcode.app`):
 
 ```bash
-xcodebuild -project FlowDictate.xcodeproj -scheme FlowDictate \
-  -configuration Release -archivePath build/FlowDictate.xcarchive archive
+xcodebuild -project Dictabar.xcodeproj -scheme Dictabar \
+  -configuration Release -archivePath build/Dictabar.xcarchive archive
 
-xcodebuild -exportArchive -archivePath build/FlowDictate.xcarchive \
+xcodebuild -exportArchive -archivePath build/Dictabar.xcarchive \
   -exportPath build/export -exportOptionsPlist ExportOptions-DeveloperID.plist
 ```
 
@@ -64,15 +64,15 @@ Unsigned or non-notarized apps show scary warnings. After Developer ID export:
 
 ```bash
 # Zip the .app first
-ditto -c -k --keepParent build/export/FlowDictate.app build/FlowDictate.zip
+ditto -c -k --keepParent build/export/Dictabar.app build/Dictabar.zip
 
-xcrun notarytool submit build/FlowDictate.zip \
+xcrun notarytool submit build/Dictabar.zip \
   --apple-id "you@email.com" \
   --team-id "YOUR_TEAM_ID" \
   --password "app-specific-password" \
   --wait
 
-xcrun stapler staple build/export/FlowDictate.app
+xcrun stapler staple build/export/Dictabar.app
 ```
 
 Create an **app-specific password** at appleid.apple.com. Prefer storing credentials with:
@@ -84,14 +84,12 @@ xcrun notarytool store-credentials "AC_PASSWORD" \
 
 Then: `xcrun notarytool submit ... --keychain-profile "AC_PASSWORD" --wait`.
 
-### Why signing also fixes Keychain popups
+### Local API-key storage
 
-Keychain ties secrets to the **code signature** (Team ID + bundle ID).
-
-- Ad-hoc / constantly changing debug signatures → macOS may ask again and again.
-- Stable **Developer ID** (or Development with fixed Team) → **one** item, **no** repeated “wants to use your confidential information” dialogs.
-
-FlowDictate stores **all provider keys in a single Keychain item** (`service=app.flowdictate.FlowDictate`, `account=api-keys`). That means at most one authorization event total — not one dialog per provider.
+Dictabar stores provider keys in `~/Library/Application Support/Dictabar/secrets.json`
+with directory mode `0700` and file mode `0600`. This avoids Keychain authorization
+dialogs in local/ad-hoc builds. The file is readable by the current macOS user and is
+less protected than Keychain, so never include it in diagnostics or release archives.
 
 ---
 
@@ -100,7 +98,7 @@ FlowDictate stores **all provider keys in a single Keychain item** (`service=app
 ### Mental model
 
 ```text
-You build + sign + notarize FlowDictate.app
+You build + sign + notarize Dictabar.app
         ↓
 Pack as .zip or .dmg
         ↓
@@ -127,13 +125,13 @@ Minimal example:
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
-    <title>FlowDictate</title>
+    <title>Dictabar</title>
     <item>
-      <title>FlowDictate 0.2.0</title>
+      <title>Dictabar 0.2.0</title>
       <sparkle:version>2</sparkle:version>
       <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
       <enclosure
-        url="https://updates.yourdomain.com/FlowDictate-0.2.0.zip"
+        url="https://updates.yourdomain.com/Dictabar-0.2.0.zip"
         sparkle:version="2"
         sparkle:shortVersionString="0.2.0"
         length="12345678"
@@ -163,14 +161,14 @@ Set the feed URL in:
 2. Generate EdDSA keys: `./bin/generate_keys` from Sparkle tools.
 3. Put **public** key in `Info.plist` → `SUPublicEDKey`.
 4. Keep **private** key only on your release machine / CI secrets.
-5. Sign each zip: `sign_update FlowDictate.zip` → paste into appcast `sparkle:edSignature`.
+5. Sign each zip: `sign_update Dictabar.zip` → paste into appcast `sparkle:edSignature`.
 6. Replace lightweight `UpdateManager` with `SPUStandardUpdaterController`.
 
 **R2 setup sketch**
 
-1. Create bucket `flowdictate-updates`.
+1. Create bucket `dictabar-updates`.
 2. Attach custom domain `updates.yourdomain.com`.
-3. Upload `FlowDictate-x.y.z.zip` + `appcast.xml`.
+3. Upload `Dictabar-x.y.z.zip` + `appcast.xml`.
 4. Cache: short TTL on appcast (e.g. 60s), long TTL on versioned zips.
 
 ---
@@ -179,14 +177,14 @@ Set the feed URL in:
 
 1. Bump `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in Xcode.
 2. Archive → Developer ID → notarize → staple.
-3. Zip: `ditto -c -k --keepParent FlowDictate.app FlowDictate-x.y.z.zip`
+3. Zip: `ditto -c -k --keepParent Dictabar.app Dictabar-x.y.z.zip`
 4. Sign update (Sparkle) if using framework.
 5. Upload zip + updated appcast to R2.
 6. Smoke-test on a clean Mac: open app, Gatekeeper OK, dictation works, update check sees the feed.
 
 ---
 
-## 4. Permissions users will see (normal, not Keychain)
+## 4. Permissions users will see
 
 These are **System Settings** privacy prompts — expected once per machine:
 
@@ -196,8 +194,6 @@ These are **System Settings** privacy prompts — expected once per machine:
 | **Accessibility** | Paste / type into other apps |
 | **Input Monitoring** | Only for Right ⌘ / side modifier shortcuts |
 
-Keychain is separate and should stay quiet after a stable signature.
-
 ---
 
 ## 5. Suggested first public feed URL
@@ -205,7 +201,7 @@ Keychain is separate and should stay quiet after a stable signature.
 Replace placeholders:
 
 ```text
-https://updates.flowdictate.app/appcast.xml
+https://updates.dictabar.app/appcast.xml
 ```
 
 Point that hostname at your R2 bucket custom domain.

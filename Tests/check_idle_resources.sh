@@ -1,27 +1,27 @@
 #!/bin/sh
 set -eu
 
-app="${1:-/Applications/FlowDictate.app}"
-binary="$app/Contents/MacOS/FlowDictate"
+app="${1:-/Applications/Dictabar.app}"
+binary="$app/Contents/MacOS/Dictabar"
 max_cpu_percent="${MAX_IDLE_CPU_PERCENT:-0.5}"
 max_footprint_kb="${MAX_IDLE_FOOTPRINT_KB:-40960}"
 
 if [ ! -x "$binary" ]; then
-  echo "FlowDictate binary not found: $binary" >&2
+  echo "Dictabar binary not found: $binary" >&2
   exit 1
 fi
-if pgrep -x FlowDictate >/dev/null; then
-  echo "Quit FlowDictate before running the idle resource check." >&2
+if pgrep -x Dictabar >/dev/null; then
+  echo "Quit Dictabar before running the idle resource check." >&2
   exit 1
 fi
 
-"$binary" >/tmp/flowdictate-idle-check.log 2>&1 &
+"$binary" >/tmp/dictabar-idle-check.log 2>&1 &
 pid=$!
 trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT INT TERM
 
 sleep 5
 if ! kill -0 "$pid" 2>/dev/null; then
-  echo "FlowDictate exited during idle resource check." >&2
+  echo "Dictabar exited during idle resource check." >&2
   exit 1
 fi
 
@@ -54,7 +54,7 @@ awk -v actual="$cpu_percent" -v limit="$max_cpu_percent" 'BEGIN { exit !(actual 
     exit 1
   }
 if [ -z "$footprint_kb" ]; then
-  echo "Could not read FlowDictate physical footprint." >&2
+  echo "Could not read Dictabar physical footprint." >&2
   exit 1
 fi
 if [ "$footprint_kb" -gt "$max_footprint_kb" ]; then

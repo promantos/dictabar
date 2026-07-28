@@ -1,6 +1,6 @@
 # What I need from you (before public ship)
 
-FlowDictate is prepared for Cloudflare updates and a signed public release.
+Dictabar is prepared for Cloudflare updates and a signed public release.
 Do these in order; then ask me to run the release path.
 
 ## 1. Apple signing (required for strangers’ Macs)
@@ -28,13 +28,13 @@ I will then: Archive → Developer ID → notarize → staple → re-zip.
 
 App already polls:
 
-`https://updates.flowdictate.app/appcast.xml`
+`https://updates.dictabar.app/appcast.xml`
 
 Either:
 
 ### Option A — custom domain (preferred, matches code)
 1. Cloudflare account.
-2. R2 bucket, e.g. `flowdictate-updates`, **public** via custom domain `updates.flowdictate.app`.
+2. R2 bucket, e.g. `dictabar-updates`, **public** via custom domain `updates.dictabar.app`.
 3. DNS CNAME for that domain → R2 public bucket (Cloudflare UI wizard).
 4. Create **R2 API token** with Object Read & Write on that bucket.
 5. Give me (paste in chat or local env file — don’t commit):
@@ -43,8 +43,8 @@ Either:
 export CLOUDFLARE_ACCOUNT_ID="..."
 export R2_ACCESS_KEY_ID="..."
 export R2_SECRET_ACCESS_KEY="..."
-export R2_BUCKET="flowdictate-updates"
-export UPDATE_PUBLIC_BASE="https://updates.flowdictate.app"
+export R2_BUCKET="dictabar-updates"
+export UPDATE_PUBLIC_BASE="https://updates.dictabar.app"
 ```
 
 ### Option B — temporary public R2.dev URL
@@ -76,4 +76,4 @@ I will:
 
 ## Privacy blurb (for landing / README)
 
-> FlowDictate records only while you hold/toggle dictation. Audio is sent only to the speech provider you choose. API keys stay in Keychain. Transcripts are optional and stored only on this Mac if you enable history. No FlowDictate cloud account.
+> Dictabar records only while you hold/toggle dictation. Audio is sent only to the speech provider you choose. API keys stay in a private local file readable only by your macOS user. Transcripts are optional and stored only on this Mac if you enable history. No Dictabar cloud account.

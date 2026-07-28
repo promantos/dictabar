@@ -1,32 +1,22 @@
 #!/usr/bin/env bash
-# FlowDictate public release helper.
+# Dictabar public release helper.
 #
 # Usage:
-#   ./scripts/release.sh              # build, zip, write appcast, optional gh release
-#   ./scripts/release.sh --upload     # also upload zip+appcast to Cloudflare R2
-#   ./scripts/release.sh --github     # create GitHub release with zip
-#
-# Required for --upload:
-#   CLOUDFLARE_ACCOUNT_ID
-#   R2_ACCESS_KEY_ID
-#   R2_SECRET_ACCESS_KEY
-#   R2_BUCKET          (default: flowdictate-updates)
-#   UPDATE_PUBLIC_BASE (default: https://updates.flowdictate.app)
+#   ./scripts/release.sh              # build, notarize, sign update, write appcast
+#   ./scripts/release.sh --github     # also create/update GitHub release
 #
 # Optional:
 #   DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer
-#   NOTARY_PROFILE=FlowDictate-notary (required for public upload)
+#   NOTARY_PROFILE="Dictabar Notary"
 #   SKIP_BUILD=1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-UPLOAD=0
 GITHUB=0
 for arg in "$@"; do
   case "$arg" in
-    --upload) UPLOAD=1 ;;
     --github) GITHUB=1 ;;
     -h|--help)
       sed -n '2,25p' "$0"
@@ -40,17 +30,15 @@ if [[ ! -d "$DEVELOPER_DIR" ]]; then
   export DEVELOPER_DIR="/Applications/Xcode.app/Contents/Developer"
 fi
 
-PBX="FlowDictate.xcodeproj/project.pbxproj"
+PBX="Dictabar.xcodeproj/project.pbxproj"
 VERSION=$(grep -m1 'MARKETING_VERSION' "$PBX" | sed -E 's/.*MARKETING_VERSION = ([^;]+);/\1/')
 BUILD=$(grep -m1 'CURRENT_PROJECT_VERSION' "$PBX" | sed -E 's/.*CURRENT_PROJECT_VERSION = ([^;]+);/\1/')
-echo "→ FlowDictate $VERSION ($BUILD)"
+echo "→ Dictabar $VERSION ($BUILD)"
 
-APP_SRC="build/DerivedData/Build/Products/Release/FlowDictate.app"
-ZIP="build/FlowDictate-${VERSION}.zip"
+APP_SRC="build/DerivedData/Build/Products/Release/Dictabar.app"
+ZIP="build/Dictabar-${VERSION}.zip"
 APPCAST="build/appcast.xml"
-R2_BUCKET="${R2_BUCKET:-flowdictate-updates}"
-UPDATE_PUBLIC_BASE="${UPDATE_PUBLIC_BASE:-https://updates.flowdictate.app}"
-NOTARY_PROFILE="${NOTARY_PROFILE:-}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-Dictabar Notary}"
 DEVELOPER_ID=$(security find-identity -v -p codesigning \
   | sed -n 's/.*"\(Developer ID Application:[^"]*\)"/\1/p' \
   | head -n 1)
@@ -59,26 +47,46 @@ if [[ -z "$DEVELOPER_ID" ]]; then
   echo "Missing Developer ID Application certificate; refusing to build a public release." >&2
   exit 1
 fi
-if [[ -z "$NOTARY_PROFILE" ]]; then
-  echo "Set NOTARY_PROFILE to a notarytool Keychain profile; notarization is mandatory." >&2
-  exit 1
-fi
-
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   echo "→ Building Release…"
   xcodebuild \
-    -project FlowDictate.xcodeproj \
-    -scheme FlowDictate \
+    -project Dictabar.xcodeproj \
+    -scheme Dictabar \
     -configuration Release \
     -derivedDataPath build/DerivedData \
+    -disableAutomaticPackageResolution \
+    -skipPackagePluginValidation \
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGN_IDENTITY="$DEVELOPER_ID" \
+    OTHER_CODE_SIGN_FLAGS="--timestamp" \
     build
 fi
 
 if [[ ! -d "$APP_SRC" ]]; then
   echo "Missing app at $APP_SRC" >&2
   exit 1
+fi
+
+# Xcode's ordinary build re-signs Sparkle.framework but not its nested helpers.
+# Sign them inside-out as required by Sparkle, then restore the outer app seal.
+SPARKLE_FRAMEWORK="$APP_SRC/Contents/Frameworks/Sparkle.framework"
+if [[ -d "$SPARKLE_FRAMEWORK" ]]; then
+  echo "→ Signing Sparkle helpers…"
+  codesign --force --sign "$DEVELOPER_ID" --options runtime --timestamp \
+    "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
+  codesign --force --sign "$DEVELOPER_ID" --options runtime --timestamp \
+    --preserve-metadata=entitlements \
+    "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
+  codesign --force --sign "$DEVELOPER_ID" --options runtime --timestamp \
+    "$SPARKLE_FRAMEWORK/Versions/B/Autoupdate"
+  codesign --force --sign "$DEVELOPER_ID" --options runtime --timestamp \
+    "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
+  codesign --force --sign "$DEVELOPER_ID" --options runtime --timestamp \
+    "$SPARKLE_FRAMEWORK"
+  codesign --force --sign "$DEVELOPER_ID" --options runtime --timestamp \
+    --entitlements Dictabar/Dictabar.entitlements \
+    "$APP_SRC"
 fi
 
 SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_SRC/Contents/Info.plist")
@@ -88,8 +96,13 @@ if [[ "$SHORT" != "$VERSION" ]]; then
 fi
 
 codesign --verify --deep --strict --verbose=2 "$APP_SRC"
-if ! codesign -d --verbose=4 "$APP_SRC" 2>&1 | grep -q 'runtime'; then
+SIGNING_INFO=$(codesign -d --verbose=4 "$APP_SRC" 2>&1)
+if ! grep 'runtime' <<<"$SIGNING_INFO" >/dev/null; then
   echo "Hardened Runtime is missing." >&2
+  exit 1
+fi
+if ! grep 'Timestamp=' <<<"$SIGNING_INFO" >/dev/null; then
+  echo "Secure timestamp is missing." >&2
   exit 1
 fi
 if codesign -d --entitlements :- "$APP_SRC" 2>/dev/null | grep -q 'get-task-allow'; then
@@ -112,6 +125,12 @@ rm -f "$ZIP"
 ditto -c -k --keepParent "$APP_SRC" "$ZIP"
 LENGTH=$(stat -f%z "$ZIP")
 PUBDATE=$(date -u '+%a, %d %b %Y %H:%M:%S +0000')
+SPARKLE_BIN="${SPARKLE_BIN:-build/DerivedData/SourcePackages/artifacts/sparkle/Sparkle/bin}"
+if [[ ! -x "$SPARKLE_BIN/sign_update" ]]; then
+  echo "Missing Sparkle sign_update at $SPARKLE_BIN/sign_update" >&2
+  exit 1
+fi
+SIGNATURE=$("$SPARKLE_BIN/sign_update" "$ZIP" | sed -E 's/ length="[0-9]+"//')
 
 echo "→ Writing appcast…"
 sed \
@@ -119,38 +138,14 @@ sed \
   -e "s/__BUILD__/${BUILD}/g" \
   -e "s/__LENGTH__/${LENGTH}/g" \
   -e "s/__PUBDATE__/${PUBDATE}/g" \
-  -e "s|https://updates.flowdictate.app|${UPDATE_PUBLIC_BASE}|g" \
+  -e "s|__SIGNATURE__|${SIGNATURE}|g" \
   scripts/appcast.template.xml > "$APPCAST"
+cp "$APPCAST" appcast.xml
 
 echo "  zip:     $ZIP ($LENGTH bytes)"
 echo "  appcast: $APPCAST"
-echo "  feed:    ${UPDATE_PUBLIC_BASE}/appcast.xml"
-echo "  package: ${UPDATE_PUBLIC_BASE}/FlowDictate-${VERSION}.zip"
-
-if [[ "$UPLOAD" == "1" ]]; then
-  : "${CLOUDFLARE_ACCOUNT_ID:?Set CLOUDFLARE_ACCOUNT_ID}"
-  : "${R2_ACCESS_KEY_ID:?Set R2_ACCESS_KEY_ID}"
-  : "${R2_SECRET_ACCESS_KEY:?Set R2_SECRET_ACCESS_KEY}"
-
-  if ! command -v aws >/dev/null 2>&1; then
-    echo "Install AWS CLI (R2 S3-compatible): brew install awscli" >&2
-    exit 1
-  fi
-
-  ENDPOINT="https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
-  export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID"
-  export AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
-  export AWS_DEFAULT_REGION=auto
-
-  echo "→ Upload to R2 bucket $R2_BUCKET…"
-  aws s3 cp "$ZIP" "s3://${R2_BUCKET}/FlowDictate-${VERSION}.zip" \
-    --endpoint-url "$ENDPOINT" \
-    --content-type application/zip
-  aws s3 cp "$APPCAST" "s3://${R2_BUCKET}/appcast.xml" \
-    --endpoint-url "$ENDPOINT" \
-    --content-type application/xml
-  echo "  public: ${UPDATE_PUBLIC_BASE}/appcast.xml"
-fi
+echo "  feed:    https://raw.githubusercontent.com/promantos/flowdictate/main/appcast.xml"
+echo "  package: https://github.com/promantos/flowdictate/releases/download/v${VERSION}/Dictabar-${VERSION}.zip"
 
 if [[ "$GITHUB" == "1" ]]; then
   if ! command -v gh >/dev/null 2>&1; then
@@ -164,18 +159,14 @@ if [[ "$GITHUB" == "1" ]]; then
   else
     echo "-> Creating GitHub release ${release_tag}"
     gh release create "${release_tag}" "$ZIP" \
-      --title "FlowDictate ${VERSION}" \
-      --notes "FlowDictate ${VERSION} (build ${BUILD}).
+      --title "Dictabar ${VERSION}" \
+      --prerelease \
+      --notes "Dictabar ${VERSION} (build ${BUILD}) test release.
 
-Download the zip, move FlowDictate.app to Applications.
-
-Updates feed (after Cloudflare upload): ${UPDATE_PUBLIC_BASE}/appcast.xml
-
-## 0.6.11 highlights
-- Use the maintainer-tested non-secret settings as defaults for fresh installs and Reset All
-- Keep provider choice, API keys, microphone hardware and login-item state user-specific
-- Keep the menu-bar provider synchronized without adding background work
-- Preserve the zero-idle resource optimizations from 0.6.10"
+- Signed with Developer ID and notarized by Apple
+- Automatic secure updates via Sparkle 2
+- Local ASR model management and corrected language metadata
+- Complete interface localization across 11 languages"
   fi
 fi
 

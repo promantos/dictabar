@@ -2,13 +2,13 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-models="$root/FlowDictate/Models.swift"
-providers="$root/FlowDictate/TranscriptionProviders.swift"
-check_dir="$(mktemp -d /tmp/flowdictate-provider-check.XXXXXX)"
+models="$root/Dictabar/Models.swift"
+providers="$root/Dictabar/TranscriptionProviders.swift"
+check_dir="$(mktemp -d /tmp/dictabar-provider-check.XXXXXX)"
 trap 'rm -rf "$check_dir"' EXIT
 
 expected=(
-  openAI groq deepgram mistral soniox gladia speechmatics elevenLabs assemblyAI
+  local openAI groq deepgram mistral soniox gladia speechmatics elevenLabs assemblyAI
   openRouter azureSpeech googleCloud fireworks together smallestAI alibaba xAI
   amazonTranscribe inworld cartesia gradium modulate cohere cloudflare custom
 )
@@ -41,27 +41,62 @@ if grep -q '"Bearer \\(apiKey\\)"' <<<"$fireworks_block"; then
   exit 1
 fi
 
-# FlowDictate sends complete WAV files; realtime-only model IDs must stay out.
+# Dictabar sends complete WAV files; realtime-only model IDs must stay out.
 ! grep -q 'flux-general-multi' "$models"
 ! grep -q '"ink-2"' "$models"
 ! grep -q 'stt-rt-' "$models"
 
 key_links="$(grep -c 'case .*value = "https://' "$models")"
-[[ "$key_links" -eq 25 ]] || {
-  echo "Expected 25 API-key links, found $key_links" >&2
+[[ "$key_links" -eq 26 ]] || {
+  echo "Expected 26 provider links, found $key_links" >&2
   exit 1
 }
+
+# Local models stay in one catalog and one pinned native runtime.
+local_models="$root/Dictabar/LocalModels.swift"
+project="$root/Dictabar.xcodeproj/project.pbxproj"
+for model in \
+  'Parakeet TDT 0.6B v3' \
+  'Nemotron 3.5 ASR' \
+  'Qwen3-ASR 0.6B' \
+  'MOSS-Transcribe-Diarize 0.9B (INT5)'; do
+  grep -q "$model" "$models"
+done
+! grep -q 'CrisperWhisper\|case \.crisper' "$models" "$local_models" "$root/Dictabar/L10n.swift"
+grep -q 'case \.local: LocalTranscriptionProvider()' "$providers"
+grep -q 'LocalModelStorage.isInstalled' "$local_models"
+grep -q 'func unloadAll()' "$local_models"
+grep -q 'Memory.clearCache()' "$local_models"
+grep -q 'LocalModelManager.shared.unload()' "$root/Dictabar/SettingsStore.swift"
+grep -q 'local.unload' "$root/Dictabar/SettingsView.swift"
+grep -q 'revision = 555bede026f6663cef998c2458af7daf04aa79f2' "$project"
 
 CLANG_MODULE_CACHE_PATH="$check_dir/clang" \
 SWIFT_MODULECACHE_PATH="$check_dir/swift" \
 xcrun swiftc \
-  "$root/FlowDictate/L10n.swift" \
-  "$root/FlowDictate/Models.swift" \
-  "$root/FlowDictate/MultipartFormData.swift" \
-  "$root/FlowDictate/DiagnosticsLogger.swift" \
+  "$root/Dictabar/L10n.swift" \
+  "$root/Dictabar/Models.swift" \
+  "$root/Dictabar/MultipartFormData.swift" \
+  "$root/Dictabar/DiagnosticsLogger.swift" \
   "$providers" \
   "$root/Tests/AWSSignerCheck.swift" \
   -o "$check_dir/aws-signer-check"
 "$check_dir/aws-signer-check"
 
-echo "Provider catalog OK: 25 providers, batch/file adapters, key links, and no realtime-only models."
+ruby -e '
+  languages = %w[en ru es de fr pt zh-Hans ja ko it tr]
+  File.foreach(ARGV.fetch(0)).with_index(1) do |line, number|
+    next unless line =~ /^\s*"([^"]+)": \[/
+    key = $1
+    missing = languages.reject { |language| line.include?("\"#{language}\":") }
+    abort "Missing #{missing.join(", ")} localization for #{key} on line #{number}" unless missing.empty?
+    values = line.scan(/"([^"]+)": "((?:\\.|[^"])*)"/).to_h
+    placeholders = values.fetch("en").scan(/%(?:@|d)/)
+    languages.each do |language|
+      actual = values.fetch(language).scan(/%(?:@|d)/)
+      abort "Placeholder mismatch for #{key} (#{language}) on line #{number}" unless actual == placeholders
+    end
+  end
+' "$root/Dictabar/L10n.swift"
+
+echo "Provider catalog OK: 26 providers, 4 local choices with verified language counts, complete localization, single-model runtime, batch/file adapters, links, and no realtime-only models."

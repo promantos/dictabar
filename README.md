@@ -1,16 +1,16 @@
-# FlowDictate
+# Dictabar
 
 Menu-bar speech-to-text for macOS. Hold or toggle a shortcut, speak, text is inserted into the frontmost app.
 
 ## Install
 
-1. Download the latest zip from [Releases](https://github.com/promantos/flowdictate/releases) or `https://updates.flowdictate.app/`.
-2. Unzip → drag **FlowDictate.app** to **Applications**.
+1. Download the latest zip from [Releases](https://github.com/promantos/dictabar/releases) or `https://updates.dictabar.app/`.
+2. Unzip → drag **Dictabar.app** to **Applications**.
 3. Launch. Allow **Microphone** (required) and **Accessibility** (to insert text). Right-⌘ shortcuts also need **Input Monitoring**.
 
 ## First run
 
-1. **Quick Start** — pick OpenAI / Groq / Deepgram / … and paste an API key (Keychain).
+1. **Quick Start** — pick OpenAI / Groq / Deepgram / … and paste an API key.
 2. **Permissions** — mic + accessibility.
 3. Dictate with **Right Command** (default) or set a custom shortcut in Settings.
 
@@ -18,13 +18,13 @@ Menu-bar speech-to-text for macOS. Hold or toggle a shortcut, speak, text is ins
 
 - Audio is recorded only while dictating.
 - Audio is sent **only** to the speech provider you configure.
-- API keys live in **Keychain**.
+- API keys stay in `~/Library/Application Support/Dictabar/secrets.json` with `0600` permissions.
 - Optional local **History** (last 30 transcripts) never leaves this Mac.
 - Temp WAV files are deleted after each run (unless Debug is on).
 
 ## Updates
 
-The app checks `https://updates.flowdictate.app/appcast.xml` on launch (optional).  
+The app checks `https://updates.dictabar.app/appcast.xml` on launch (optional).
 Until Cloudflare R2 is wired, use GitHub Releases.
 
 ## Build (dev)

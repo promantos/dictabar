@@ -1,25 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
-    <title>FlowDictate</title>
-    <link>https://updates.flowdictate.app/appcast.xml</link>
-    <description>FlowDictate release feed</description>
+    <title>Dictabar</title>
+    <link>https://raw.githubusercontent.com/promantos/flowdictate/main/appcast.xml</link>
+    <description>Dictabar release feed</description>
     <language>en</language>
 
     <!-- Newest item first. release.sh rewrites this file. -->
     <item>
-      <title>FlowDictate __VERSION__</title>
+      <title>Dictabar __VERSION__</title>
       <sparkle:version>__BUILD__</sparkle:version>
       <sparkle:shortVersionString>__VERSION__</sparkle:shortVersionString>
       <pubDate>__PUBDATE__</pubDate>
       <enclosure
-        url="https://updates.flowdictate.app/FlowDictate-__VERSION__.zip"
+        url="https://github.com/promantos/flowdictate/releases/download/v__VERSION__/Dictabar-__VERSION__.zip"
         sparkle:version="__BUILD__"
         sparkle:shortVersionString="__VERSION__"
         length="__LENGTH__"
+        __SIGNATURE__
         type="application/octet-stream"
       />
-      <!-- When Sparkle is embedded, add: sparkle:edSignature="..." -->
     </item>
   </channel>
 </rss>

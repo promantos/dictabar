@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Dictabar</title>
+    <link>https://raw.githubusercontent.com/promantos/flowdictate/main/appcast.xml</link>
+    <description>Dictabar release feed</description>
+    <language>en</language>
+
+    <!-- Newest item first. release.sh rewrites this file. -->
+    <item>
+      <title>Dictabar 0.6.15</title>
+      <sparkle:version>31</sparkle:version>
+      <sparkle:shortVersionString>0.6.15</sparkle:shortVersionString>
+      <pubDate>Tue, 28 Jul 2026 18:42:40 +0000</pubDate>
+      <enclosure
+        url="https://github.com/promantos/flowdictate/releases/download/v0.6.15/Dictabar-0.6.15.zip"
+        sparkle:version="31"
+        sparkle:shortVersionString="0.6.15"
+        length="13730214"
+        sparkle:edSignature="EJiRcFUy9x82vdvBKkfGZJN/05tbUdQhKHcx+1mqPcUOQQY8hswOUE7o0ZUFGlEvodzkmENF1YCtj/3x0vFHDA=="
+        type="application/octet-stream"
+      />
+    </item>
+  </channel>
+</rss>
