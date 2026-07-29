@@ -40,6 +40,8 @@
 		FD1000100000000000000004 /* Qwen3ASR in Frameworks */ = {isa = PBXBuildFile; productRef = FD1000200000000000000004 /* Qwen3ASR */; };
 		FD1000100000000000000005 /* MossTranscribe in Frameworks */ = {isa = PBXBuildFile; productRef = FD1000200000000000000005 /* MossTranscribe */; };
 		FD2000100000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = FD2000200000000000000001 /* Sparkle */; };
+		FD3000100000000000000001 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = FD3000200000000000000001 /* LICENSE */; };
+		FD3000100000000000000002 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = FD3000200000000000000002 /* THIRD_PARTY_NOTICES.md */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -72,6 +74,8 @@
 		FD0000200000000000000027 /* TranscriptHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptHistoryStore.swift; sourceTree = "<group>"; };
 		FD0000200000000000000028 /* ProviderConnectionTester.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProviderConnectionTester.swift; sourceTree = "<group>"; };
 		FD0000200000000000000029 /* LocalModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModels.swift; sourceTree = "<group>"; };
+		FD3000200000000000000001 /* LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
+		FD3000200000000000000002 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = THIRD_PARTY_NOTICES.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -94,6 +98,8 @@
 		FD0000400000000000000000 = {
 			isa = PBXGroup;
 			children = (
+				FD3000200000000000000001 /* LICENSE */,
+				FD3000200000000000000002 /* THIRD_PARTY_NOTICES.md */,
 				FD0000400000000000000001 /* Dictabar */,
 				FD0000400000000000000002 /* Products */,
 			);
@@ -213,6 +219,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				FD0000100000000000000023 /* Assets.xcassets in Resources */,
+				FD3000100000000000000001 /* LICENSE in Resources */,
+				FD3000100000000000000002 /* THIRD_PARTY_NOTICES.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -293,7 +301,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 33;
 				DEVELOPMENT_TEAM = 8J49699RB4;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -303,7 +311,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.6.16;
+				MARKETING_VERSION = 0.6.17;
 				PRODUCT_BUNDLE_IDENTIFIER = app.dictabar.Dictabar;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -319,7 +327,7 @@
 				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 33;
 				DEVELOPMENT_TEAM = 8J49699RB4;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -329,7 +337,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.6.16;
+				MARKETING_VERSION = 0.6.17;
 				PRODUCT_BUNDLE_IDENTIFIER = app.dictabar.Dictabar;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;

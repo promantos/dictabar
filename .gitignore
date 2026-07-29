@@ -41,7 +41,6 @@ secrets.json
 # Swift Package Manager
 .swiftpm/
 Packages/
-Package.resolved
 
 # Playgrounds
 timeline.xctimeline

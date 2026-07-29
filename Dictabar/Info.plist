@@ -14,6 +14,8 @@
 	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>Dictabar</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 Roman Platonov</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

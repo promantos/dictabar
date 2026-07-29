@@ -164,12 +164,13 @@ if [[ "$GITHUB" == "1" ]]; then
       --target main \
       --title "Dictabar ${VERSION}" \
       --prerelease \
-      --notes "Dictabar ${VERSION} (build ${BUILD}) test release.
+      --notes "Dictabar ${VERSION} (build ${BUILD}).
 
 - Signed with Developer ID and notarized by Apple
 - Automatic secure updates via Sparkle 2
-- Local ASR model management and corrected language metadata
-- Complete interface localization across 11 languages"
+- Open-source under GPL-3.0
+- Installable directly or with Homebrew
+- Local and bring-your-own-key speech recognition"
   fi
 fi
 

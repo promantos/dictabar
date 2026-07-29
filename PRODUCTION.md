@@ -1,207 +1,284 @@
-# Dictabar — production: signing, updates, local secrets
+# Dictabar production releases and automatic updates
 
-## 1. Code signing (Apple Developer account)
+This is the source of truth for shipping Dictabar outside the Mac App Store.
 
-You need a paid **Apple Developer Program** membership ($99/year).
+## 1. Current architecture
 
-### Certificates you will use
+| Component | Location | Visibility |
+|-----------|----------|------------|
+| Source, release scripts, tags | [`promantos/dictabar`](https://github.com/promantos/dictabar) | Public |
+| Sparkle feed | [`dictabar-updates/main/appcast.xml`](https://raw.githubusercontent.com/promantos/dictabar-updates/main/appcast.xml) | Public |
+| Notarized update zips | [`dictabar-updates/releases`](https://github.com/promantos/dictabar-updates/releases) | Public |
+| Installed app | `/Applications/Dictabar.app` | Local |
+| Developer ID private key | macOS login Keychain | Local only |
+| Notary profile | Keychain profile `Dictabar Notary` | Local only |
+| Sparkle EdDSA private key | macOS Keychain | Local only |
+| Sparkle EdDSA public key | `Dictabar/Info.plist` → `SUPublicEDKey` | Committed |
 
-| Certificate | When |
-|-------------|------|
-| **Apple Development** | Local debug / TestFlight-style internal runs |
-| **Developer ID Application** | Distribute **outside** the Mac App Store (DMG / ZIP / your site / R2) |
-| **Mac App Distribution** | Only if you ship via the **Mac App Store** |
+There is no Cloudflare R2 dependency in the current release path.
 
-For a menu-bar utility distributed yourself (R2 / website), use **Developer ID Application**.
-
-### One-time setup in Xcode
-
-1. Open `Dictabar.xcodeproj` in **full Xcode** (not only Command Line Tools).
-2. Select the **Dictabar** target → **Signing & Capabilities**.
-3. Enable **Automatically manage signing**.
-4. Choose your **Team** (the one linked to your developer account).
-5. Bundle ID is `app.dictabar.Dictabar` — register it once in [developer.apple.com](https://developer.apple.com/account/resources/identifiers/list) if Xcode doesn’t create it.
-6. Keep **Hardened Runtime** on (already set in the project).
-
-### Archive & export (Developer ID build)
+### User-side update flow
 
 ```text
-Product → Archive
-→ Distribute App → Developer ID
-→ Upload / Export
+Dictabar checks the public appcast
+        ↓
+Sparkle compares CFBundleVersion with sparkle:version
+        ↓
+Sparkle downloads Dictabar-x.y.z.zip from the public GitHub Release
+        ↓
+Sparkle verifies the EdDSA signature and Apple code signature
+        ↓
+Sparkle replaces /Applications/Dictabar.app and relaunches it
 ```
 
-Or CLI (after Xcode is selected with `xcode-select -s /Applications/Xcode.app`):
+Automatic checks are enabled by `SUEnableAutomaticChecks`. Users can also run
+**Check for Updates…**. No GitHub account or token is required on the user's Mac.
+
+## 2. One-time release-Mac setup
+
+These items are already configured on the current release Mac.
+
+### Apple signing
+
+- Paid Apple Developer Program membership.
+- Team ID: `8J49699RB4`.
+- Bundle ID: `app.dictabar.Dictabar`.
+- Full Xcode installed.
+- **Developer ID Application** certificate and its private key installed in the
+  login Keychain.
+- Hardened Runtime enabled for Release builds.
+
+Verify the signing identity:
 
 ```bash
-xcodebuild -project Dictabar.xcodeproj -scheme Dictabar \
-  -configuration Release -archivePath build/Dictabar.xcarchive archive
-
-xcodebuild -exportArchive -archivePath build/Dictabar.xcarchive \
-  -exportPath build/export -exportOptionsPlist ExportOptions-DeveloperID.plist
+security find-identity -v -p codesigning
 ```
 
-Example `ExportOptions-DeveloperID.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>method</key>
-  <string>developer-id</string>
-  <key>teamID</key>
-  <string>YOUR_TEAM_ID</string>
-  <key>signingStyle</key>
-  <string>automatic</string>
-</dict>
-</plist>
-```
-
-### Notarization (required for Gatekeeper)
-
-Unsigned or non-notarized apps show scary warnings. After Developer ID export:
-
-```bash
-# Zip the .app first
-ditto -c -k --keepParent build/export/Dictabar.app build/Dictabar.zip
-
-xcrun notarytool submit build/Dictabar.zip \
-  --apple-id "you@email.com" \
-  --team-id "YOUR_TEAM_ID" \
-  --password "app-specific-password" \
-  --wait
-
-xcrun stapler staple build/export/Dictabar.app
-```
-
-Create an **app-specific password** at appleid.apple.com. Prefer storing credentials with:
-
-```bash
-xcrun notarytool store-credentials "AC_PASSWORD" \
-  --apple-id "you@email.com" --team-id "YOUR_TEAM_ID" --password "..."
-```
-
-Then: `xcrun notarytool submit ... --keychain-profile "AC_PASSWORD" --wait`.
-
-### Local API-key storage
-
-Dictabar stores provider keys in `~/Library/Application Support/Dictabar/secrets.json`
-with directory mode `0700` and file mode `0600`. This avoids Keychain authorization
-dialogs in local/ad-hoc builds. The file is readable by the current macOS user and is
-less protected than Keychain, so never include it in diagnostics or release archives.
-
----
-
-## 2. Updates via Cloudflare R2 (or any CDN)
-
-### Mental model
+The result must contain:
 
 ```text
-You build + sign + notarize Dictabar.app
-        ↓
-Pack as .zip or .dmg
-        ↓
-Upload binary to R2 (public bucket / custom domain)
-        ↓
-Upload appcast.xml next to it (or another public URL)
-        ↓
-App polls appcast on launch / “Check for Updates”
-        ↓
-User downloads new build (today) or Sparkle installs it (later)
+Developer ID Application: Roman Platonov (8J49699RB4)
 ```
 
-R2 is only object storage + HTTP. It does **not** push updates by itself. The app must **check a feed**.
+### Apple notarization
 
-### Appcast (Sparkle-compatible)
+Credentials are stored in Keychain under `Dictabar Notary`:
 
-Host something like:
-
-`https://updates.yourdomain.com/appcast.xml`
-
-Minimal example:
-
-```xml
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>Dictabar</title>
-    <item>
-      <title>Dictabar 0.2.0</title>
-      <sparkle:version>2</sparkle:version>
-      <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
-      <enclosure
-        url="https://updates.yourdomain.com/Dictabar-0.2.0.zip"
-        sparkle:version="2"
-        sparkle:shortVersionString="0.2.0"
-        length="12345678"
-        type="application/octet-stream"
-        sparkle:edSignature="BASE64_EDDSA_SIGNATURE"/>
-      <pubDate>Tue, 08 Jul 2026 12:00:00 +0000</pubDate>
-    </item>
-  </channel>
-</rss>
+```bash
+xcrun notarytool history --keychain-profile "Dictabar Notary"
 ```
 
-Set the feed URL in:
+To recreate the profile on another Mac:
 
-- `Info.plist` → `SUFeedURL`
-- `UpdateManager.defaultFeedURL` in code
+```bash
+xcrun notarytool store-credentials "Dictabar Notary"
+```
 
-### What the app does today
+Enter the App Store Connect API key information, or the Apple ID, Team ID, and
+app-specific password requested by `notarytool`. Never commit these credentials.
 
-`UpdateManager` fetches the appcast, compares `sparkle:version` / short version to `CFBundleShortVersionString`, and:
+### GitHub
 
-- on manual **Check for updates** → opens the enclosure URL if newer
-- on launch (if enabled) → quiet check, status only (no browser spam)
+`gh` must be authenticated as an account that can push to both repositories:
 
-### Full auto-update later (Sparkle)
+```bash
+gh auth status
+gh repo view promantos/dictabar
+gh repo view promantos/dictabar-updates
+```
 
-1. Add [Sparkle](https://github.com/sparkle-project/Sparkle) via SPM.
-2. Generate EdDSA keys: `./bin/generate_keys` from Sparkle tools.
-3. Put **public** key in `Info.plist` → `SUPublicEDKey`.
-4. Keep **private** key only on your release machine / CI secrets.
-5. Sign each zip: `sign_update Dictabar.zip` → paste into appcast `sparkle:edSignature`.
-6. Replace lightweight `UpdateManager` with `SPUStandardUpdaterController`.
+### Sparkle signing key
 
-**R2 setup sketch**
+The private EdDSA key is stored in the Keychain and is read by Sparkle's
+`sign_update`. Its public half is committed as `SUPublicEDKey`.
 
-1. Create bucket `dictabar-updates`.
-2. Attach custom domain `updates.yourdomain.com`.
-3. Upload `Dictabar-x.y.z.zip` + `appcast.xml`.
-4. Cache: short TTL on appcast (e.g. 60s), long TTL on versioned zips.
+Do not regenerate this key for routine releases. Existing installations trust
+the current public key; losing the private key would require distributing a
+manually installed migration build.
 
----
+If macOS asks whether `sign_update` may access the key, choose **Always Allow**.
 
-## 3. Release checklist
+## 3. Release workflow
 
-1. Bump `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in Xcode.
-2. Archive → Developer ID → notarize → staple.
-3. Zip: `ditto -c -k --keepParent Dictabar.app Dictabar-x.y.z.zip`
-4. Sign update (Sparkle) if using framework.
-5. Upload zip + updated appcast to R2.
-6. Smoke-test on a clean Mac: open app, Gatekeeper OK, dictation works, update check sees the feed.
+### Step 1 — bump the version
 
----
+Update both Release and Debug occurrences in
+`Dictabar.xcodeproj/project.pbxproj`:
 
-## 4. Permissions users will see
+- `MARKETING_VERSION`: user-visible version, for example `0.6.17`.
+- `CURRENT_PROJECT_VERSION`: strictly increasing integer build number.
 
-These are **System Settings** privacy prompts — expected once per machine:
+Never reuse a published build number. Sparkle primarily orders releases by
+`sparkle:version`, which is generated from `CURRENT_PROJECT_VERSION`.
+
+### Step 2 — run source checks
+
+```bash
+bash Tests/check_permissions.sh
+bash Tests/check_provider_catalog.sh
+bash Tests/check_hardening.sh
+git diff --check
+```
+
+### Step 3 — build and publish the zip as a prerelease
+
+```bash
+./scripts/release.sh --github
+```
+
+The script:
+
+1. Builds the Release configuration with Developer ID and Hardened Runtime.
+2. Signs Sparkle's nested XPC services and helper apps inside-out.
+3. Verifies the app signature, secure timestamp, and release entitlements.
+4. Creates a zip and submits it through `Dictabar Notary`.
+5. Waits for Apple notarization, staples the ticket, and runs Gatekeeper.
+6. Repackages the stapled app.
+7. Signs the zip with the Sparkle EdDSA key.
+8. Writes `build/appcast.xml` and repository-root `appcast.xml`.
+9. Uploads the zip to `promantos/dictabar-updates` as a GitHub prerelease.
+
+Generated artifacts:
+
+```text
+build/DerivedData/Build/Products/Release/Dictabar.app
+build/Dictabar-x.y.z.zip
+build/appcast.xml
+appcast.xml
+```
+
+### Step 4 — verify the release candidate
+
+```bash
+APP=build/DerivedData/Build/Products/Release/Dictabar.app
+codesign --verify --deep --strict --verbose=2 "$APP"
+xcrun stapler validate "$APP"
+spctl --assess --type execute --verbose=4 "$APP"
+
+gh release view "vX.Y.Z" \
+  --repo promantos/dictabar-updates \
+  --json url,isPrerelease,assets
+```
+
+Expected Gatekeeper result:
+
+```text
+accepted
+source=Notarized Developer ID
+```
+
+Do not publish the appcast yet if the release candidate is not ready for every
+user. The public appcast, not GitHub's prerelease label, controls Sparkle rollout.
+
+### Step 5 — commit and tag the source
+
+Review the exact changes before staging:
+
+```bash
+git status --short
+git diff --check
+git diff --stat
+```
+
+Commit the release changes, push `main`, then create and push the matching tag:
+
+```bash
+git add -A
+git commit -m "release: Dictabar X.Y.Z"
+git push origin main
+git tag -a "vX.Y.Z" -m "Dictabar X.Y.Z"
+git push origin "vX.Y.Z"
+```
+
+### Step 6 — publish the appcast (go live)
+
+`appcast.xml` already exists in the public update repository, so update it with:
+
+```bash
+APPCAST_SHA=$(gh api \
+  repos/promantos/dictabar-updates/contents/appcast.xml \
+  --jq .sha)
+APPCAST_CONTENT=$(base64 -i appcast.xml)
+
+gh api --method PUT \
+  repos/promantos/dictabar-updates/contents/appcast.xml \
+  --field message="Publish Dictabar X.Y.Z appcast" \
+  --field content="$APPCAST_CONTENT" \
+  --field sha="$APPCAST_SHA"
+```
+
+Once this succeeds, all Dictabar installations using the production feed can
+discover the release.
+
+### Step 7 — verify public delivery
+
+```bash
+set -o pipefail
+
+curl -fsSL \
+  https://raw.githubusercontent.com/promantos/dictabar-updates/main/appcast.xml
+
+shasum -a 256 "build/Dictabar-X.Y.Z.zip"
+curl -fsSL \
+  "https://github.com/promantos/dictabar-updates/releases/download/vX.Y.Z/Dictabar-X.Y.Z.zip" \
+  | shasum -a 256
+```
+
+The local and remote zip hashes must match.
+
+### Step 8 — test the installed update
+
+Start from an older signed build in `/Applications`, then launch Dictabar and use
+**Check for Updates…**, or wait for its scheduled automatic check.
+
+After Sparkle finishes:
+
+```bash
+APP=/Applications/Dictabar.app
+/usr/libexec/PlistBuddy \
+  -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy \
+  -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist"
+codesign --verify --deep --strict --verbose=2 "$APP"
+xcrun stapler validate "$APP"
+spctl --assess --type execute --verbose=4 "$APP"
+```
+
+### Step 9 — mark the GitHub release stable
+
+After the rollout test:
+
+```bash
+gh release edit "vX.Y.Z" \
+  --repo promantos/dictabar-updates \
+  --prerelease=false \
+  --latest
+```
+
+This changes the GitHub presentation only. Sparkle rollout already began when
+the appcast was published.
+
+## 4. Recovery rules
+
+- A bad release should be fixed with a new, higher build number. Sparkle does
+  not automatically downgrade users.
+- To halt discovery of a release, restore the previous public `appcast.xml`.
+- Do not delete a release asset while its item remains in the appcast; clients
+  will receive a broken download URL.
+- Never commit the Sparkle private key, Apple credentials, `.p12` files,
+  app-specific passwords, API keys, or GitHub tokens.
+- Keep a secure backup of the Developer ID private key and Sparkle private key
+  outside the repository.
+
+## 5. User permissions and local data
 
 | Permission | Why |
 |------------|-----|
 | **Microphone** | Record dictation |
-| **Accessibility** | Paste / type into other apps |
-| **Input Monitoring** | Only for Right ⌘ / side modifier shortcuts |
+| **Accessibility** | Insert text into other apps |
+| **Input Monitoring** | Detect Right Command and side-modifier shortcuts |
 
----
-
-## 5. Suggested first public feed URL
-
-Replace placeholders:
-
-```text
-https://updates.dictabar.app/appcast.xml
-```
-
-Point that hostname at your R2 bucket custom domain.
+Provider API keys are stored in
+`~/Library/Application Support/Dictabar/secrets.json`. The directory uses mode
+`0700` and the file uses `0600`. Never include that file in diagnostics or
+release archives.
