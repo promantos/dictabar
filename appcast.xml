@@ -11,13 +11,13 @@
       <title>Dictabar 0.6.17</title>
       <sparkle:version>33</sparkle:version>
       <sparkle:shortVersionString>0.6.17</sparkle:shortVersionString>
-      <pubDate>Wed, 29 Jul 2026 08:02:18 +0000</pubDate>
+      <pubDate>Wed, 29 Jul 2026 08:29:19 +0000</pubDate>
       <enclosure
         url="https://github.com/promantos/dictabar-updates/releases/download/v0.6.17/Dictabar-0.6.17.zip"
         sparkle:version="33"
         sparkle:shortVersionString="0.6.17"
-        length="13758627"
-        sparkle:edSignature="EYo3HlHFB+CTdO2uRCoZmFzyxhwo7D8ueHVIAYegBfyBLrzsGiOjLwSacfMD/JRGP9oT+7/Y0tZrlEV3tjj1DA=="
+        length="13758613"
+        sparkle:edSignature="+zX/faOINhtmDztTNQpDxOIEk6MRDAIkzeqxDBIK4ZbRNcdaYlTRYRSdFGRWw74NFPB37n27oKXbKDA6iFEzCg=="
         type="application/octet-stream"
       />
     </item>
