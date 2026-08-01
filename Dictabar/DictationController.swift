@@ -423,8 +423,11 @@ final class DictationController {
             DiagnosticsLogger.shared.log("pipeline: cancelled")
         } catch {
             TextInsertionService.restoreClipboardIfNeeded()
+            let existingActiveAudioURL = activeAudioURL.flatMap {
+                FileManager.default.fileExists(atPath: $0.path) ? $0 : nil
+            }
             if !transcriptionCompleted,
-               let source = activeAudioURL
+               let source = existingActiveAudioURL
                     ?? (FileManager.default.fileExists(atPath: recordedURL.path) ? recordedURL : nil) {
                 do {
                     try FailedDictationStore.save(source)

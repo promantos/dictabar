@@ -39,6 +39,8 @@ grep -q 'commonFormat: .pcmFormatInt16' Dictabar/AudioRecorder.swift \
   || fail "WAV processing format is not explicit"
 grep -q 'to: file.processingFormat' Dictabar/AudioRecorder.swift \
   || fail "audio converter output can mismatch AVAudioFile processing format"
+grep -q 'file.close()' Dictabar/AudioRecorder.swift \
+  || fail "WAV writer is not closed before final validation"
 grep -q 'recovery: removed invalid empty recording' Dictabar/DictationController.swift \
   || fail "invalid failed-recording cleanup missing"
 grep -q 'Retry last dictation' Dictabar/L10n.swift \

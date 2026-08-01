@@ -59,7 +59,9 @@ private final class AudioCaptureState: @unchecked Sendable {
         acceptingBuffers = false
         lock.unlock()
         pendingWrites.wait()
-        writeQueue.sync {}
+        writeQueue.sync {
+            file.close()
+        }
     }
 
     private func write(_ buffer: AVAudioPCMBuffer) {
@@ -257,6 +259,8 @@ final class AudioRecorder {
             from: inputFormat,
             to: file.processingFormat
         ) else {
+            file.close()
+            try? FileManager.default.removeItem(at: url)
             throw AudioRecorderError.cannotStart("the selected microphone format is unsupported")
         }
         converter.downmix = true
