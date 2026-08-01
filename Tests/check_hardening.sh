@@ -25,6 +25,8 @@ grep -q 'AVAudioEngine()' Dictabar/AudioRecorder.swift \
   || fail "device-scoped AVAudioEngine capture path missing"
 grep -q 'kAudioOutputUnitProperty_CurrentDevice' Dictabar/AudioRecorder.swift \
   || fail "selected input is not attached to the capture audio unit"
+grep -q 'selectedDeviceID == Self.currentDefaultInputDeviceID()' Dictabar/AudioRecorder.swift \
+  || fail "default input is redundantly reassigned and can stop audio callbacks"
 grep -q 'recoverInputDeviceIfNeeded' Dictabar/AudioRecorder.swift \
   || fail "input-device crash recovery missing"
 ! grep -q 'previousDefaultInputUID' Dictabar/AudioRecorder.swift \

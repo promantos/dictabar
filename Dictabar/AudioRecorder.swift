@@ -344,7 +344,22 @@ final class AudioRecorder {
         guard let selectedDeviceID = Self.coreAudioDeviceID(uniqueID: deviceID) else {
             throw AudioRecorderError.deviceUnavailable
         }
+        if selectedDeviceID == Self.currentDefaultInputDeviceID() { return nil }
         return selectedDeviceID
+    }
+
+    private static func currentDefaultInputDeviceID() -> AudioDeviceID? {
+        var deviceID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        guard AudioObjectGetPropertyData(
+            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
+        ) == noErr, deviceID != 0 else { return nil }
+        return deviceID
     }
 
     @discardableResult
