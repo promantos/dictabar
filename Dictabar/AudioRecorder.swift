@@ -60,6 +60,18 @@ private final class AudioCaptureState: @unchecked Sendable {
     }
 }
 
+// AVAudioEngine invokes tap callbacks on its realtime messenger queue, not on the
+// main actor. Keep closure formation outside AudioRecorder's @MainActor context.
+private func installAudioTap(
+    on input: AVAudioInputNode,
+    format: AVAudioFormat,
+    state: AudioCaptureState
+) {
+    input.installTap(onBus: 0, bufferSize: 4096, format: format) { buffer, _ in
+        state.append(buffer)
+    }
+}
+
 /// Records microphone audio to the WAV format accepted by every Dictabar provider.
 /// AVAudioEngine lets the selected input device stay private to this capture unit instead
 /// of changing macOS's system-wide default input device.
@@ -167,9 +179,7 @@ final class AudioRecorder {
         }
 
         let captureState = AudioCaptureState(file: file, converter: converter)
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
-            captureState.append(buffer)
-        }
+        installAudioTap(on: input, format: inputFormat, state: captureState)
         do {
             engine.prepare()
             try engine.start()
