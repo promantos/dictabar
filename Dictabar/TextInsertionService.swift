@@ -11,6 +11,12 @@ enum TextInsertionService {
         let backup: PasteboardBackup
     }
 
+    private struct AccessibilityTextTarget {
+        let element: AXUIElement
+        let originalValue: String
+        let expectedValue: String
+    }
+
     static func insert(_ text: String, settings: SettingsStore) async throws {
         var output = text
         if settings.addTrailingSpace { output += " " }
@@ -59,6 +65,7 @@ enum TextInsertionService {
     /// 4) put previous clipboard back (or leave empty)
     private static func paste(_ text: String, restoreClipboard: Bool) async throws {
         let pb = NSPasteboard.general
+        let target = accessibilityTextTarget(replacingWith: text)
 
         // --- snapshot OLD clipboard (before we touch it) ---
         let backup = PasteboardBackup.capture(from: pb)
@@ -82,9 +89,16 @@ enum TextInsertionService {
         }
 
         // Always restore even if the task is cancelled mid-sleep.
+        var restoreOldClipboard = true
         defer {
             if pendingRestore != nil {
-                removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: 1)
+                if restoreOldClipboard {
+                    removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: 1)
+                } else {
+                    // Preserve the transcript for manual paste when AX proves the target
+                    // did not change; restoring the old clipboard here would lose it.
+                    DiagnosticsLogger.shared.log("clipboard: paste not verified; transcript left on pasteboard")
+                }
                 pendingRestore = nil
             }
         }
@@ -92,11 +106,16 @@ enum TextInsertionService {
         // Give the front app time to read pasteboard for ⌘V.
         // Use non-throwing sleep so CancellationError does not skip defer restore logic incorrectly;
         // defer still runs on cancel, but we also restore immediately after a cancelled wait.
-        let slept = await sleepAllowingCancel(milliseconds: 180)
+        let slept = await sleepAllowingCancel(milliseconds: 250)
         if !slept {
             // Cancelled during wait — restore now (defer also covers this).
             DiagnosticsLogger.shared.log("clipboard: cancelled during paste wait; restoring")
             return
+        }
+
+        if let target, !accessibilityTargetMatches(target) {
+            restoreOldClipboard = false
+            throw InsertionError.pasteNotVerified
         }
 
         // --- CRITICAL: remove transcript, restore old ---
@@ -106,7 +125,7 @@ enum TextInsertionService {
 
         // One bounded follow-up catches apps that read/rewrite pasteboard asynchronously.
         for pass in 2...3 {
-            let ok = await sleepAllowingCancel(milliseconds: 120)
+            let ok = await sleepAllowingCancel(milliseconds: 150)
             if !ok {
                 DiagnosticsLogger.shared.log("clipboard: cancelled during scrub; restoring")
                 removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: pass)
@@ -249,23 +268,41 @@ enum TextInsertionService {
     // MARK: - Typing
 
     private static func type(_ text: String) async throws {
-        try await Task.detached(priority: .userInitiated) {
-            let source = CGEventSource(stateID: .hidSystemState)
-            guard let source else { throw InsertionError.eventSourceUnavailable }
-            for string in text.unicodeChunks(maxUTF16Count: 32) {
-                try Task.checkCancellation()
-                var units = Array(string.utf16)
-                let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
-                let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
-                down?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
-                up?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
-                down?.post(tap: .cghidEventTap)
-                up?.post(tap: .cghidEventTap)
-            }
-        }.value
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let source else { throw InsertionError.eventSourceUnavailable }
+        for string in text.unicodeChunks(maxUTF16Count: 32) {
+            try Task.checkCancellation()
+            var units = Array(string.utf16)
+            let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+            let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+            down?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+            up?.keyboardSetUnicodeString(stringLength: units.count, unicodeString: &units)
+            down?.post(tap: .cghidEventTap)
+            up?.post(tap: .cghidEventTap)
+            await Task.yield()
+        }
     }
 
     private static func insertViaAccessibility(_ text: String) -> Bool {
+        guard let element = focusedUIElement() else { return false }
+        let target = accessibilityTextTarget(element: element, replacingWith: text)
+        guard AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            text as CFString
+        ) == .success else { return false }
+
+        guard let target else { return true }
+        guard let value = accessibilityValue(of: target.element) else { return true }
+        if value == target.expectedValue { return true }
+        // A transformed value (smart quotes/autocorrect) means the target changed;
+        // do not paste again and duplicate the transcript.
+        if value != target.originalValue { return true }
+        DiagnosticsLogger.shared.log("insertion: accessibility write was not applied")
+        return false
+    }
+
+    private static func focusedUIElement() -> AXUIElement? {
         let system = AXUIElementCreateSystemWide()
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
@@ -273,13 +310,62 @@ enum TextInsertionService {
             kAXFocusedUIElementAttribute as CFString,
             &focused
         ) == .success,
-        let focused else { return false }
-        let element = focused as! AXUIElement
-        return AXUIElementSetAttributeValue(
+        let focused,
+        CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        return focused as! AXUIElement
+    }
+
+    private static func accessibilityTextTarget(
+        replacingWith text: String
+    ) -> AccessibilityTextTarget? {
+        guard let element = focusedUIElement() else { return nil }
+        return accessibilityTextTarget(element: element, replacingWith: text)
+    }
+
+    private static func accessibilityTextTarget(
+        element: AXUIElement,
+        replacingWith text: String
+    ) -> AccessibilityTextTarget? {
+        guard let original = accessibilityValue(of: element) else { return nil }
+        var rangeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
             element,
-            kAXSelectedTextAttribute as CFString,
-            text as CFString
-        ) == .success
+            kAXSelectedTextRangeAttribute as CFString,
+            &rangeRef
+        ) == .success,
+        let rangeRef,
+        CFGetTypeID(rangeRef) == AXValueGetTypeID(),
+        AXValueGetType(rangeRef as! AXValue) == .cfRange else { return nil }
+
+        var range = CFRange()
+        guard AXValueGetValue(rangeRef as! AXValue, .cfRange, &range),
+              range.location >= 0,
+              range.length >= 0 else { return nil }
+        let nsOriginal = original as NSString
+        guard range.location + range.length <= nsOriginal.length else { return nil }
+        let expected = nsOriginal.replacingCharacters(
+            in: NSRange(location: range.location, length: range.length),
+            with: text
+        )
+        return AccessibilityTextTarget(
+            element: element,
+            originalValue: original,
+            expectedValue: expected
+        )
+    }
+
+    private static func accessibilityValue(of element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            &value
+        ) == .success else { return nil }
+        return value as? String
+    }
+
+    private static func accessibilityTargetMatches(_ target: AccessibilityTextTarget) -> Bool {
+        accessibilityValue(of: target.element) == target.expectedValue
     }
 }
 
@@ -307,10 +393,12 @@ private extension String {
 enum InsertionError: LocalizedError {
     case missingAccessibility
     case eventSourceUnavailable
+    case pasteNotVerified
     var errorDescription: String? {
         switch self {
         case .missingAccessibility: L10n.t("error.accessibility")
         case .eventSourceUnavailable: L10n.t("error.eventSource")
+        case .pasteNotVerified: L10n.t("error.pasteNotVerified")
         }
     }
 }

@@ -1,4 +1,5 @@
 import CryptoKit
+import AVFoundation
 import Foundation
 
 enum ProviderError: LocalizedError {
@@ -563,6 +564,14 @@ struct GoogleCloudSTTTranscriptionProvider: TranscriptionProvider {
         guard var components = URLComponents(string: base + "/speech:recognize") else { throw ProviderError.badURL }
         components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
         guard let url = components.url else { throw ProviderError.badURL }
+        guard let duration = audioDuration(from: audioURL) else {
+            throw ProviderError.unsupported("Google Cloud could not read the recording duration.")
+        }
+        guard duration <= 60 else {
+            throw ProviderError.unsupported(
+                "Google Cloud synchronous recognition supports recordings up to 60 seconds. Use a shorter recording or another provider."
+            )
+        }
 
         // Recorder writes WAV; Google wants raw LINEAR16 PCM (no RIFF header).
         let b64 = try linear16PCM(fromWAV: audioURL).base64EncodedString()
@@ -1151,6 +1160,13 @@ private func linear16PCM(fromWAV url: URL) throws -> Data {
     return data.subdata(in: 44..<data.count)
 }
 
+private func audioDuration(from url: URL) -> TimeInterval? {
+    guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else {
+        return nil
+    }
+    return Double(file.length) / file.fileFormat.sampleRate
+}
+
 /// Shared session with bounded timeouts, no cross-origin redirects, and response size caps.
 private enum Network {
     /// Refuse redirects that change host (prevents leaking API keys + POST body to a 3rd party).
@@ -1284,18 +1300,12 @@ private func fetch(_ request: URLRequest, bodyFile: URL?) async throws -> (data:
         return (data, http)
     }
 
-    let (bytes, response) = try await Network.session.bytes(for: request)
+    let (data, response) = try await Network.session.data(for: request)
     guard let http = response as? HTTPURLResponse else {
         throw ProviderError.network("Invalid HTTP response")
     }
-    var data = Data()
-    let expected = http.expectedContentLength > 0 ? Int(http.expectedContentLength) : 0
-    data.reserveCapacity(min(Network.maxResponseBytes, expected))
-    for try await byte in bytes {
-        guard data.count < Network.maxResponseBytes else {
-            throw ProviderError.http(413, "Provider response too large.")
-        }
-        data.append(byte)
+    guard data.count <= Network.maxResponseBytes else {
+        throw ProviderError.http(413, "Provider response too large.")
     }
     return (data, http)
 }

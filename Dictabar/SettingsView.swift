@@ -31,7 +31,7 @@ struct SettingsView: View {
                 HStack {
                     Label(item.localizedTitle, systemImage: item.icon)
                     if item == .permissions,
-                       !permissionCenter.isReady(needsAccessibility: settingsStore.autoInsert) {
+                       !permissionCenter.isReady(needsAccessibility: true) {
                         Spacer(minLength: 4)
                         Circle().fill(.orange).frame(width: 8, height: 8)
                     }
@@ -567,7 +567,7 @@ struct SettingsView: View {
             PermissionsPanel(
                 center: permissionCenter,
                 needsInputMonitoring: settingsStore.shortcutPreset.needsInputMonitoring,
-                needsAccessibility: settingsStore.autoInsert
+                needsAccessibility: true
             )
             Text(settingsStore.shortcutPreset.needsInputMonitoring
                 ? L10n.t("perm.imNoteOn")
