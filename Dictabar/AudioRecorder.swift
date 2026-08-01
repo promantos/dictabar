@@ -3,10 +3,24 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 
+private final class CapturedAudioBuffer: @unchecked Sendable {
+    let value: AVAudioPCMBuffer
+
+    init(_ value: AVAudioPCMBuffer) {
+        self.value = value
+    }
+}
+
 private final class AudioCaptureState: @unchecked Sendable {
     let lock = NSLock()
+    private let writeQueue = DispatchQueue(
+        label: "app.dictabar.audio-file-writer",
+        qos: .utility
+    )
+    private let pendingWrites = DispatchGroup()
     let file: AVAudioFile
     let converter: AVAudioConverter
+    private var acceptingBuffers = true
     private(set) var failure: String?
 
     init(file: AVAudioFile, converter: AVAudioConverter) {
@@ -16,8 +30,43 @@ private final class AudioCaptureState: @unchecked Sendable {
 
     func append(_ buffer: AVAudioPCMBuffer) {
         lock.lock()
-        defer { lock.unlock() }
-        guard failure == nil else { return }
+        let canAccept = acceptingBuffers && failure == nil
+        lock.unlock()
+        guard canAccept else { return }
+
+        guard let copiedBuffer = Self.copy(buffer) else {
+            setFailure("Could not copy an audio buffer while recording.")
+            return
+        }
+
+        lock.lock()
+        guard acceptingBuffers, failure == nil else {
+            lock.unlock()
+            return
+        }
+        pendingWrites.enter()
+        lock.unlock()
+
+        let captured = CapturedAudioBuffer(copiedBuffer)
+        writeQueue.async { [self, captured] in
+            defer { pendingWrites.leave() }
+            write(captured.value)
+        }
+    }
+
+    func finish() {
+        lock.lock()
+        acceptingBuffers = false
+        lock.unlock()
+        pendingWrites.wait()
+        writeQueue.sync {}
+    }
+
+    private func write(_ buffer: AVAudioPCMBuffer) {
+        lock.lock()
+        let canWrite = failure == nil
+        lock.unlock()
+        guard canWrite else { return }
 
         let ratio = converter.outputFormat.sampleRate / max(buffer.format.sampleRate, 1)
         let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * ratio)) + 1
@@ -25,7 +74,7 @@ private final class AudioCaptureState: @unchecked Sendable {
             pcmFormat: converter.outputFormat,
             frameCapacity: max(capacity, 1)
         ) else {
-            failure = "Could not allocate the audio conversion buffer."
+            setFailure("Could not allocate the audio conversion buffer.")
             return
         }
 
@@ -41,16 +90,46 @@ private final class AudioCaptureState: @unchecked Sendable {
             return buffer
         }
         if let conversionError {
-            failure = conversionError.localizedDescription
+            setFailure(conversionError.localizedDescription)
         } else if status == .error {
-            failure = "The audio converter failed while recording."
+            setFailure("The audio converter failed while recording.")
         } else if converted.frameLength > 0 {
             do {
                 try file.write(from: converted)
             } catch {
-                failure = error.localizedDescription
+                setFailure(error.localizedDescription)
             }
         }
+    }
+
+    private func setFailure(_ message: String) {
+        lock.lock()
+        if failure == nil { failure = message }
+        lock.unlock()
+    }
+
+    private static func copy(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(
+            pcmFormat: buffer.format,
+            frameCapacity: buffer.frameLength
+        ) else { return nil }
+
+        let source = UnsafeMutableAudioBufferListPointer(
+            UnsafeMutablePointer(mutating: buffer.audioBufferList)
+        )
+        let destination = UnsafeMutableAudioBufferListPointer(copy.mutableAudioBufferList)
+        guard source.count == destination.count else { return nil }
+
+        for index in source.indices {
+            let sourceBuffer = source[index]
+            guard let sourceData = sourceBuffer.mData,
+                  let destinationData = destination[index].mData else { return nil }
+            let byteCount = min(sourceBuffer.mDataByteSize, destination[index].mDataByteSize)
+            memcpy(destinationData, sourceData, Int(byteCount))
+            destination[index].mDataByteSize = byteCount
+        }
+        copy.frameLength = buffer.frameLength
+        return copy
     }
 
     func takeFailure() -> String? {
@@ -186,6 +265,7 @@ final class AudioRecorder {
         } catch {
             input.removeTap(onBus: 0)
             engine.stop()
+            captureState.finish()
             try? FileManager.default.removeItem(at: url)
             throw AudioRecorderError.cannotStart(error.localizedDescription)
         }
@@ -207,13 +287,14 @@ final class AudioRecorder {
 
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        state.finish()
         self.engine = nil
         self.captureState = nil
         outputURL = nil
         isRecording = false
 
-        // AVAudioEngine writes the file from its tap. Poll briefly instead of assuming
-        // a fixed finalization delay on every disk/device combination.
+        // The writer queue has drained. Poll briefly instead of assuming a fixed
+        // finalization delay on every disk/device combination.
         for _ in 0..<10 {
             let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             let frames = (try? AVAudioFile(forReading: url).length) ?? 0
@@ -237,8 +318,10 @@ final class AudioRecorder {
     }
 
     func cancel() {
+        let state = captureState
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
+        state?.finish()
         engine = nil
         captureState = nil
         if let outputURL { try? FileManager.default.removeItem(at: outputURL) }

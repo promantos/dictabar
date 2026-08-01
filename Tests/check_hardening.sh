@@ -31,6 +31,10 @@ grep -q 'recoverInputDeviceIfNeeded' Dictabar/AudioRecorder.swift \
   || fail "recording still changes the process-wide default input"
 grep -q 'size > 4_096, frames > 0' Dictabar/AudioRecorder.swift \
   || fail "empty WAV regression guard missing"
+grep -q 'app.dictabar.audio-file-writer' Dictabar/AudioRecorder.swift \
+  || fail "audio callback still writes on the realtime queue"
+grep -q 'pendingWrites.wait()' Dictabar/AudioRecorder.swift \
+  || fail "recording stop does not drain the audio writer queue"
 grep -q 'recovery: removed invalid empty recording' Dictabar/DictationController.swift \
   || fail "invalid failed-recording cleanup missing"
 grep -q 'Retry last dictation' Dictabar/L10n.swift \
