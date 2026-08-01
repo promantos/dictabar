@@ -237,25 +237,30 @@ final class AudioRecorder {
         }
 
         let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
-              let targetFormat = AVAudioFormat(
-                  commonFormat: .pcmFormatInt16,
-                  sampleRate: 16_000,
-                  channels: 1,
-                  interleaved: true
-              ),
-              let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            throw AudioRecorderError.cannotStart("the selected microphone format is unsupported")
+        }
+
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(
+                forWriting: url,
+                settings: settings,
+                commonFormat: .pcmFormatInt16,
+                interleaved: true
+            )
+        } catch {
+            throw AudioRecorderError.cannotStart(error.localizedDescription)
+        }
+
+        guard let converter = AVAudioConverter(
+            from: inputFormat,
+            to: file.processingFormat
+        ) else {
             throw AudioRecorderError.cannotStart("the selected microphone format is unsupported")
         }
         converter.downmix = true
         converter.primeMethod = .none
-
-        let file: AVAudioFile
-        do {
-            file = try AVAudioFile(forWriting: url, settings: settings)
-        } catch {
-            throw AudioRecorderError.cannotStart(error.localizedDescription)
-        }
 
         let captureState = AudioCaptureState(file: file, converter: converter)
         installAudioTap(on: input, format: inputFormat, state: captureState)
