@@ -1,18 +1,77 @@
 import AVFoundation
+import AudioToolbox
 import CoreAudio
 import Foundation
 
+private final class AudioCaptureState: @unchecked Sendable {
+    let lock = NSLock()
+    let file: AVAudioFile
+    let converter: AVAudioConverter
+    private(set) var failure: String?
+
+    init(file: AVAudioFile, converter: AVAudioConverter) {
+        self.file = file
+        self.converter = converter
+    }
+
+    func append(_ buffer: AVAudioPCMBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard failure == nil else { return }
+
+        let ratio = converter.outputFormat.sampleRate / max(buffer.format.sampleRate, 1)
+        let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * ratio)) + 1
+        guard let converted = AVAudioPCMBuffer(
+            pcmFormat: converter.outputFormat,
+            frameCapacity: max(capacity, 1)
+        ) else {
+            failure = "Could not allocate the audio conversion buffer."
+            return
+        }
+
+        var supplied = false
+        var conversionError: NSError?
+        let status = converter.convert(to: converted, error: &conversionError) { _, inputStatus in
+            guard !supplied else {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        if let conversionError {
+            failure = conversionError.localizedDescription
+        } else if status == .error {
+            failure = "The audio converter failed while recording."
+        } else if converted.frameLength > 0 {
+            do {
+                try file.write(from: converted)
+            } catch {
+                failure = error.localizedDescription
+            }
+        }
+    }
+
+    func takeFailure() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return failure
+    }
+}
+
 /// Records microphone audio to the WAV format accepted by every Dictabar provider.
-/// AVAudioRecorder is deliberately used here: it is the proven macOS capture path for
-/// this app and lets Core Audio own buffering, conversion and WAV finalization.
+/// AVAudioEngine lets the selected input device stay private to this capture unit instead
+/// of changing macOS's system-wide default input device.
 @MainActor
 final class AudioRecorder {
+    // Kept only to recover a device left changed by Dictabar <= 0.6.17 after a crash.
     private static let originalInputRecoveryKey = "audio.originalInputUID"
 
-    private var recorder: AVAudioRecorder?
+    private var engine: AVAudioEngine?
+    private var captureState: AudioCaptureState?
     private var outputURL: URL?
     private var isRecording = false
-    private var previousDefaultInputUID: String?
 
     /// Delete only genuinely stale files so another active instance is never disrupted.
     static func cleanupStaleTempRecordings() {
@@ -51,7 +110,7 @@ final class AudioRecorder {
     func start(deviceID: String) async throws -> URL {
         if isRecording { cancel() }
 
-        try selectInputIfNeeded(deviceID)
+        let selectedDeviceID = try selectedInputDeviceID(deviceID)
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("Dictabar-\(UUID().uuidString)")
@@ -66,48 +125,96 @@ final class AudioRecorder {
             AVLinearPCMIsNonInterleaved: false
         ]
 
-        let recorder: AVAudioRecorder
+        let engine = AVAudioEngine()
+        let input = engine.inputNode
+        guard let audioUnit = input.audioUnit else {
+            throw AudioRecorderError.cannotStart("the input audio unit is unavailable")
+        }
+
+        if var selectedDeviceID {
+            let status = AudioUnitSetProperty(
+                audioUnit,
+                kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global,
+                0,
+                &selectedDeviceID,
+                UInt32(MemoryLayout<AudioDeviceID>.size)
+            )
+            guard status == noErr else {
+                throw AudioRecorderError.cannotStart("the selected microphone could not be attached to the recorder")
+            }
+        }
+
+        let inputFormat = input.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+              let targetFormat = AVAudioFormat(
+                  commonFormat: .pcmFormatInt16,
+                  sampleRate: 16_000,
+                  channels: 1,
+                  interleaved: true
+              ),
+              let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+            throw AudioRecorderError.cannotStart("the selected microphone format is unsupported")
+        }
+        converter.downmix = true
+        converter.primeMethod = .none
+
+        let file: AVAudioFile
         do {
-            recorder = try AVAudioRecorder(url: url, settings: settings)
+            file = try AVAudioFile(forWriting: url, settings: settings)
         } catch {
-            restoreDefaultInputIfNeeded()
             throw AudioRecorderError.cannotStart(error.localizedDescription)
         }
 
-        recorder.isMeteringEnabled = false
-        guard recorder.prepareToRecord() else {
-            restoreDefaultInputIfNeeded()
-            try? FileManager.default.removeItem(at: url)
-            throw AudioRecorderError.cannotStart("prepareToRecord returned false")
+        let captureState = AudioCaptureState(file: file, converter: converter)
+        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+            captureState.append(buffer)
         }
-        guard recorder.record() else {
-            restoreDefaultInputIfNeeded()
+        do {
+            engine.prepare()
+            try engine.start()
+        } catch {
+            input.removeTap(onBus: 0)
+            engine.stop()
             try? FileManager.default.removeItem(at: url)
-            throw AudioRecorderError.cannotStart(
-                "record() returned false — check microphone permission and input device"
-            )
+            throw AudioRecorderError.cannotStart(error.localizedDescription)
         }
 
-        self.recorder = recorder
+        self.engine = engine
+        self.captureState = captureState
         outputURL = url
         isRecording = true
-        DiagnosticsLogger.shared.log("audio: recording started \(url.lastPathComponent)")
+        DiagnosticsLogger.shared.log(
+            "audio: recording started \(url.lastPathComponent) device=\(deviceID.isEmpty ? "default" : deviceID)"
+        )
         return url
     }
 
     func stop() async throws -> URL {
-        guard isRecording, let recorder, let url = outputURL else {
+        guard isRecording, let engine, let state = captureState, let url = outputURL else {
             throw AudioRecorderError.notRecording
         }
 
-        recorder.stop()
-        self.recorder = nil
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        self.engine = nil
+        self.captureState = nil
         outputURL = nil
         isRecording = false
-        restoreDefaultInputIfNeeded()
 
-        // AVAudioRecorder finalizes the WAV asynchronously on some macOS versions.
-        try? await Task.sleep(for: .milliseconds(80))
+        // AVAudioEngine writes the file from its tap. Poll briefly instead of assuming
+        // a fixed finalization delay on every disk/device combination.
+        for _ in 0..<10 {
+            let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            let frames = (try? AVAudioFile(forReading: url).length) ?? 0
+            if size > 4_096, frames > 0 { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+
+        if let failure = state.takeFailure() {
+            try? FileManager.default.removeItem(at: url)
+            throw AudioRecorderError.cannotStart(failure)
+        }
 
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         let frames = (try? AVAudioFile(forReading: url).length) ?? 0
@@ -120,51 +227,22 @@ final class AudioRecorder {
     }
 
     func cancel() {
-        recorder?.stop()
+        engine?.inputNode.removeTap(onBus: 0)
+        engine?.stop()
+        engine = nil
+        captureState = nil
         if let outputURL { try? FileManager.default.removeItem(at: outputURL) }
-        recorder = nil
         outputURL = nil
         isRecording = false
-        restoreDefaultInputIfNeeded()
         DiagnosticsLogger.shared.log("audio: cancelled")
     }
 
-    private func selectInputIfNeeded(_ deviceID: String) throws {
-        guard !deviceID.isEmpty else { return }
-        guard Self.coreAudioDeviceID(uniqueID: deviceID) != nil else {
+    private func selectedInputDeviceID(_ deviceID: String) throws -> AudioDeviceID? {
+        guard !deviceID.isEmpty else { return nil }
+        guard let selectedDeviceID = Self.coreAudioDeviceID(uniqueID: deviceID) else {
             throw AudioRecorderError.deviceUnavailable
         }
-        guard let current = Self.currentDefaultInputUID(), current != deviceID else { return }
-
-        UserDefaults.standard.set(current, forKey: Self.originalInputRecoveryKey)
-        guard Self.setDefaultInputDevice(uniqueID: deviceID) else {
-            UserDefaults.standard.removeObject(forKey: Self.originalInputRecoveryKey)
-            throw AudioRecorderError.cannotStart("selected microphone could not be activated")
-        }
-        previousDefaultInputUID = current
-    }
-
-    private func restoreDefaultInputIfNeeded() {
-        guard let uid = previousDefaultInputUID else { return }
-        previousDefaultInputUID = nil
-        if Self.setDefaultInputDevice(uniqueID: uid) {
-            UserDefaults.standard.removeObject(forKey: Self.originalInputRecoveryKey)
-            DiagnosticsLogger.shared.log("audio: restored original input device")
-        }
-    }
-
-    private static func currentDefaultInputUID() -> String? {
-        var deviceID = AudioDeviceID(0)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &deviceID
-        ) == noErr, deviceID != 0 else { return nil }
-        return uniqueID(for: deviceID)
+        return selectedDeviceID
     }
 
     @discardableResult

@@ -21,12 +21,14 @@ grep -q 'waitsForConnectivity = true' "$providers" || fail "connectivity waiting
   || fail "multipart recording is buffered in memory"
 grep -q 'fromFile: bodyFile' "$providers" || fail "file-backed uploads missing"
 
-grep -q 'AVAudioRecorder(url:' Dictabar/AudioRecorder.swift \
-  || fail "proven AVAudioRecorder capture path missing"
+grep -q 'AVAudioEngine()' Dictabar/AudioRecorder.swift \
+  || fail "device-scoped AVAudioEngine capture path missing"
+grep -q 'kAudioOutputUnitProperty_CurrentDevice' Dictabar/AudioRecorder.swift \
+  || fail "selected input is not attached to the capture audio unit"
 grep -q 'recoverInputDeviceIfNeeded' Dictabar/AudioRecorder.swift \
   || fail "input-device crash recovery missing"
-grep -q 'restoreDefaultInputIfNeeded' Dictabar/AudioRecorder.swift \
-  || fail "selected input is not restored"
+! grep -q 'previousDefaultInputUID' Dictabar/AudioRecorder.swift \
+  || fail "recording still changes the process-wide default input"
 grep -q 'size > 4_096, frames > 0' Dictabar/AudioRecorder.swift \
   || fail "empty WAV regression guard missing"
 grep -q 'recovery: removed invalid empty recording' Dictabar/DictationController.swift \
@@ -47,8 +49,8 @@ grep -q 'refreshMenuTitles(provider: provider)' Dictabar/DictabarApp.swift \
   || fail "menu bar provider can lag behind Settings"
 grep -q 'statusMenu?.popUp' Dictabar/DictabarApp.swift \
   || fail "persistent status-item menu can keep AppKit tracking active"
-grep -q 'NSStatusBar.system.removeStatusItem(item)' Dictabar/DictabarApp.swift \
-  || fail "closed status menu does not return to cold idle"
+! grep -q 'NSStatusBar.system.removeStatusItem' Dictabar/DictabarApp.swift \
+  || fail "closed status menu destroys the persistent status item"
 
 settings="Dictabar/SettingsStore.swift"
 grep -q 'saveTranscriptHistory = defaults.object(forKey: "saveTranscriptHistory") as? Bool ?? true' "$settings" \

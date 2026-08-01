@@ -95,7 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Launch quietly as a menu-bar app. Permission prompts are shown only after
         // an explicit user action (starting dictation or opening Permissions).
-        if permissionCenter.isReady(needsAccessibility: settingsStore.autoInsert) {
+        if permissionCenter.isReady(needsAccessibility: true) {
             appState.completePermissionsOnboarding()
         }
 
@@ -382,18 +382,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         sender.highlight(true)
         statusMenu?.popUp(positioning: nil, at: .zero, in: sender)
         sender.highlight(false)
-        DispatchQueue.main.async { [weak self] in
-            self?.resetStatusItemAfterMenu()
-        }
-    }
-
-    private func resetStatusItemAfterMenu() {
-        guard let item = statusItem else { return }
-        statusMenu = nil
-        NSStatusBar.system.removeStatusItem(item)
-        statusItem = nil
-        setupMenuBar()
-        updateStatusItem(for: appState.dictationState)
     }
 
     private func updateStatusItem(for state: AppState.DictationState) {

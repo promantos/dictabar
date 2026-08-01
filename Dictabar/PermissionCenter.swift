@@ -88,7 +88,8 @@ final class PermissionCenter: ObservableObject {
         startPollingWhileAway()
     }
 
-    /// Mic always required. Accessibility only when inserting text. IM is NOT required to record.
+    /// Mic and Accessibility are required for dictation; Accessibility also powers
+    /// the global cancel monitor while another app owns focus.
     func ensureForDictation(needsInputMonitoring: Bool, needsAccessibility: Bool = true) async -> (ok: Bool, message: String?) {
         refresh()
         DiagnosticsLogger.shared.log(

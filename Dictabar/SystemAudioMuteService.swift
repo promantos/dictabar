@@ -43,14 +43,16 @@ enum SystemAudioMuteService {
     static func endMute() {
         lock.lock()
         defer { lock.unlock() }
-        guard let state = activeRestore else {
-            // Still clear any stale persisted flag.
+        guard let state = activeRestore else { return }
+        if applyRestore(state) {
+            activeRestore = nil
             clearPersisted()
-            return
+        } else {
+            // Keep the recovery record so a temporarily unavailable device can
+            // be restored on the next launch or after it reconnects.
+            persist(state)
+            DiagnosticsLogger.shared.log("mute: restore deferred")
         }
-        activeRestore = nil
-        clearPersisted()
-        applyRestore(state)
     }
 
     /// Call on launch: if we crashed while muted, restore system audio.
@@ -60,8 +62,11 @@ enum SystemAudioMuteService {
         guard activeRestore == nil else { return }
         guard let state = loadPersisted() else { return }
         DiagnosticsLogger.shared.log("mute: recovering system audio after unclean shutdown")
-        clearPersisted()
-        applyRestore(state)
+        if applyRestore(state) {
+            clearPersisted()
+        } else {
+            DiagnosticsLogger.shared.log("mute: recovery deferred; original output is unavailable")
+        }
     }
 
     /// Legacy helper used by older call sites.
@@ -89,20 +94,23 @@ enum SystemAudioMuteService {
         UserDefaults.standard.removeObject(forKey: defaultsKey)
     }
 
-    private static func applyRestore(_ state: RestoreState) {
+    @discardableResult
+    private static func applyRestore(_ state: RestoreState) -> Bool {
         let deviceID: AudioObjectID = state.deviceID ?? defaultOutputDevice()
         guard deviceID != kAudioObjectUnknown, isAvailable(deviceID) else {
             DiagnosticsLogger.shared.log("mute: original output unavailable; skipped restore on a different device")
-            return
+            return false
         }
+        var restored = true
         if let muted = state.muted {
-            _ = setMuted(muted != 0, deviceID: deviceID)
+            restored = setMuted(muted != 0, deviceID: deviceID)
         } else {
-            _ = setMuted(false, deviceID: deviceID)
+            restored = setMuted(false, deviceID: deviceID)
         }
         if let volume = state.volume {
-            _ = setVolume(volume, deviceID: deviceID)
+            restored = setVolume(volume, deviceID: deviceID) && restored
         }
+        return restored
     }
 
     // MARK: - HAL helpers

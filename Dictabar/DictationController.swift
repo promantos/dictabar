@@ -36,6 +36,10 @@ final class DictationController {
         switch settingsStore.shortcutMode {
         case .toggle: toggle()
         case .hold:
+            if case .transcribing = appState.dictationState {
+                cancel()
+                return
+            }
             stopWhenReady = false
             beginStart()
         }
@@ -55,7 +59,11 @@ final class DictationController {
         case .recording:
             stopAndTranscribe()
         case .starting:
-            stopWhenReady = true
+            if settingsStore.shortcutMode == .toggle {
+                cancel()
+            } else {
+                stopWhenReady = true
+            }
         case .transcribing:
             cancel()
         case .idle, .failed, .needsMicrophonePermission, .needsAccessibilityPermission:
@@ -462,8 +470,9 @@ final class DictationController {
     }
 
     private func ensurePermissions() async -> Bool {
-        // Recording needs mic only; paste needs accessibility. Input Monitoring is NOT required here.
-        let needsAX = settingsStore.autoInsert
+        // The global cancel monitor also needs Accessibility when the target app
+        // owns focus, so cancellation must be permissioned consistently.
+        let needsAX = true
         let result = await PermissionCenter.shared.ensureForDictation(
             needsInputMonitoring: settingsStore.shortcutPreset.needsInputMonitoring,
             needsAccessibility: needsAX

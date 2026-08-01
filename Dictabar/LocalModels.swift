@@ -37,6 +37,7 @@ final class LocalModelManager: ObservableObject {
     @Published private(set) var states: [LocalSpeechModel: LocalModelState] = [:]
     @Published private(set) var loadedModel: LocalSpeechModel?
     @Published private(set) var loadingModel: LocalSpeechModel?
+    private var idleUnloadTask: Task<Void, Never>?
 
     private init() {
         refresh()
@@ -90,6 +91,8 @@ final class LocalModelManager: ObservableObject {
     }
 
     func unload() {
+        idleUnloadTask?.cancel()
+        idleUnloadTask = nil
         loadedModel = nil
         loadingModel = nil
         Task { [weak self] in
@@ -100,12 +103,31 @@ final class LocalModelManager: ObservableObject {
     }
 
     func markLoading(_ model: LocalSpeechModel) {
+        idleUnloadTask?.cancel()
+        idleUnloadTask = nil
         loadingModel = model
     }
 
     func markLoaded(_ model: LocalSpeechModel) {
         loadingModel = nil
         loadedModel = model
+    }
+
+    func scheduleIdleUnload(_ model: LocalSpeechModel) {
+        idleUnloadTask?.cancel()
+        idleUnloadTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(300))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await LocalModelRuntime.shared.unload(model)
+            guard let self, self.loadedModel == model else { return }
+            self.loadedModel = nil
+            self.idleUnloadTask = nil
+            DiagnosticsLogger.shared.log("local: unloaded idle model \(model.rawValue)")
+        }
     }
 
     func markLoadFailed(_ model: LocalSpeechModel) {
@@ -214,11 +236,13 @@ struct LocalTranscriptionProvider: TranscriptionProvider {
                 model: model,
                 language: settings.language
             )
-            await LocalModelManager.shared.markLoaded(model)
         } catch {
             await LocalModelManager.shared.markLoadFailed(model)
+            await LocalModelManager.shared.scheduleIdleUnload(model)
             throw error
         }
+        await LocalModelManager.shared.markLoaded(model)
+        await LocalModelManager.shared.scheduleIdleUnload(model)
         guard !text.isEmpty else { throw ProviderError.noTranscript }
         return TranscriptionResult(
             text: text,
