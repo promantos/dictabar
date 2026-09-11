@@ -10,7 +10,7 @@ trap 'rm -rf "$check_dir"' EXIT
 expected=(
   local openAI groq deepgram mistral soniox gladia speechmatics elevenLabs assemblyAI
   openRouter azureSpeech googleCloud fireworks together smallestAI alibaba xAI
-  amazonTranscribe inworld cartesia gradium modulate cohere cloudflare custom
+  amazonTranscribe inworld cartesia gradium modulate cohere nariLabs cloudflare custom
 )
 
 for provider in "${expected[@]}"; do
@@ -47,8 +47,8 @@ fi
 ! grep -q 'stt-rt-' "$models"
 
 key_links="$(grep -c 'case .*value = "https://' "$models")"
-[[ "$key_links" -eq 26 ]] || {
-  echo "Expected 26 provider links, found $key_links" >&2
+[[ "$key_links" -eq 27 ]] || {
+  echo "Expected 27 provider links, found $key_links" >&2
   exit 1
 }
 
@@ -81,7 +81,19 @@ xcrun swiftc \
   "$providers" \
   "$root/Tests/AWSSignerCheck.swift" \
   -o "$check_dir/aws-signer-check"
-"$check_dir/aws-signer-check"
+if [[ "${NARI_WEBSOCKET_TEST:-0}" == "1" ]]; then
+  python3 "$root/Tests/nari_websocket_server.py" "$check_dir/port" >"$check_dir/server.log" 2>&1 &
+  server_pid=$!
+  trap 'kill "$server_pid" 2>/dev/null || true; rm -rf "$check_dir"' EXIT
+  for _ in {1..50}; do
+    [[ -s "$check_dir/port" ]] && break
+    sleep 0.1
+  done
+  "$check_dir/aws-signer-check" "$(cat "$check_dir/port")"
+  if [[ -s "$check_dir/server.log" ]]; then cat "$check_dir/server.log"; exit 1; fi
+else
+  "$check_dir/aws-signer-check"
+fi
 
 ruby -e '
   languages = %w[en ru es de fr pt zh-Hans ja ko it tr]
@@ -99,4 +111,4 @@ ruby -e '
   end
 ' "$root/Dictabar/L10n.swift"
 
-echo "Provider catalog OK: 26 providers, 4 local choices with verified language counts, complete localization, single-model runtime, batch/file adapters, links, and no realtime-only models."
+echo "Provider catalog OK: 27 providers, 4 local choices with verified language counts, complete localization, single-model runtime, file and WebSocket adapters, links, and compatible models."

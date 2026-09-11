@@ -88,7 +88,182 @@ enum ProviderRegistry {
         case .gradium: GradiumTranscriptionProvider()
         case .modulate: ModulateTranscriptionProvider()
         case .cohere: CohereTranscriptionProvider()
+        case .nariLabs: NariLabsTranscriptionProvider()
         case .cloudflare: CloudflareTranscriptionProvider()
+        }
+    }
+}
+
+// MARK: - Nari Labs realtime STT
+
+struct NariLabsTranscriptionProvider: TranscriptionProvider {
+    func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProviderError.missingAPIKey
+        }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard var components = URLComponents(string: base + "/realtime") else { throw ProviderError.badURL }
+        components.scheme = "wss"
+        components.queryItems = [URLQueryItem(name: "intent", value: "transcription")]
+        guard let url = components.url else { throw ProviderError.badURL }
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        let socket = Network.session.webSocketTask(with: request)
+        socket.maximumMessageSize = Network.maxResponseBytes
+        return try await transcribe(audioURL: audioURL, settings: settings, socket: socket)
+    }
+
+    // Socket injection also exercises the real protocol against a local test server.
+    func transcribe(audioURL: URL, settings: ProviderSettings, socket: URLSessionWebSocketTask) async throws -> TranscriptionResult {
+        defer { socket.cancel(with: .normalClosure, reason: nil) }
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            let size = try audioURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard size <= settings.provider.maximumUploadBytes else {
+                throw ProviderError.unsupported("The recording exceeds Nari Labs' upload limit.")
+            }
+            let pcm = try linear16PCM(fromWAV: audioURL)
+            guard !pcm.isEmpty else { throw ProviderError.noTranscript }
+            socket.resume()
+            do {
+                var session: [String: Any] = ["model": settings.model, "turn_detection": NSNull()]
+                if let language = settings.language.apiCode { session["language"] = language }
+                try await Self.send(["type": "session.configure", "session": session], to: socket)
+                let configured = try await Self.receive(from: socket)
+                guard configured["type"] as? String == "session.configured" else {
+                    throw ProviderError.unsupported("Nari Labs did not confirm the transcription session.")
+                }
+                // Send and receive concurrently: automatic 36-second boundaries can
+                // complete before the file upload or final manual commit finishes.
+                return try await withThrowingTaskGroup(of: TranscriptionResult?.self) { group in
+                    defer { group.cancelAll() }
+                    group.addTask {
+                        for offset in stride(from: 0, to: pcm.count, by: 3_200) {
+                            try Task.checkCancellation()
+                            let chunk = pcm.subdata(in: offset..<min(offset + 3_200, pcm.count))
+                            try await Self.send([
+                                "type": "input_audio_buffer.append", "audio": chunk.base64EncodedString()
+                            ], to: socket)
+                        }
+                        try await Self.send([
+                            "type": "input_audio_buffer.commit", "event_id": NariTranscriptState.endEventID
+                        ], to: socket)
+                        return nil
+                    }
+                    group.addTask {
+                        var state = NariTranscriptState()
+                        while !state.isComplete {
+                            try Task.checkCancellation()
+                            try state.consume(try await Self.receive(from: socket))
+                        }
+                        return try state.result(settings: settings)
+                    }
+                    do {
+                        var transcript: TranscriptionResult?
+                        for try await value in group {
+                            if let value { transcript = value }
+                        }
+                        guard let transcript else { throw ProviderError.noTranscript }
+                        return transcript
+                    } catch {
+                        // Unblock a sibling suspended in receive/send before the
+                        // structured task group waits for it to finish.
+                        socket.cancel(with: .goingAway, reason: nil)
+                        throw error
+                    }
+                }
+            } catch {
+                try Task.checkCancellation()
+                if let response = socket.response as? HTTPURLResponse, response.statusCode >= 400 {
+                    throw ProviderError.http(response.statusCode, "Nari Labs WebSocket handshake failed.")
+                }
+                throw error
+            }
+        } onCancel: {
+            socket.cancel(with: .goingAway, reason: nil)
+        }
+    }
+
+    private static func send(_ event: [String: Any], to socket: URLSessionWebSocketTask) async throws {
+        let data = try JSONSerialization.data(withJSONObject: event)
+        try await socket.send(.string(String(decoding: data, as: UTF8.self)))
+    }
+
+    private static func receive(from socket: URLSessionWebSocketTask) async throws -> [String: Any] {
+        let data: Data
+        switch try await socket.receive() {
+        case let .string(text): data = Data(text.utf8)
+        case let .data(bytes): data = bytes
+        @unknown default: throw ProviderError.unsupported("Unexpected Nari Labs WebSocket message.")
+        }
+        guard let event = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ProviderError.unsupported("Invalid Nari Labs response.")
+        }
+        if event["type"] as? String == "error" {
+            throw NariTranscriptState.providerError(event)
+        }
+        return event
+    }
+}
+
+/// Keeps final results in audio order, never appending revisable partial text.
+struct NariTranscriptState {
+    static let endEventID = "dictabar_end_of_input"
+    private var order: [String] = []
+    private var committed = Set<String>()
+    private var finals: [String: String] = [:]
+    private var languages: [String: String] = [:]
+    private var durations: [String: Double] = [:]
+    private var endAcknowledged = false
+
+    var isComplete: Bool { endAcknowledged && committed.allSatisfy { finals[$0] != nil } }
+
+    mutating func consume(_ event: [String: Any]) throws {
+        switch event["type"] as? String {
+        case "error": throw Self.providerError(event)
+        case "input_audio_buffer.committed":
+            guard let id = event["item_id"] as? String else {
+                throw ProviderError.unsupported("Nari Labs omitted the utterance ID.")
+            }
+            if committed.insert(id).inserted { order.append(id) }
+            if event["client_event_id"] as? String == Self.endEventID { endAcknowledged = true }
+        case "input_audio_buffer.commit_empty":
+            if event["client_event_id"] as? String == Self.endEventID { endAcknowledged = true }
+        case "transcript.completed":
+            guard let id = event["item_id"] as? String, let text = event["transcript"] as? String else {
+                throw ProviderError.unsupported("Nari Labs returned an incomplete final transcript.")
+            }
+            finals[id] = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            languages[id] = event["language"] as? String
+            durations[id] = (event["usage"] as? [String: Any])?["input_audio_seconds"] as? Double
+        default: break
+        }
+    }
+
+    func result(settings: ProviderSettings) throws -> TranscriptionResult {
+        guard isComplete else { throw ProviderError.unsupported("Nari Labs transcription is incomplete.") }
+        let text = order.compactMap { finals[$0] }.filter { !$0.isEmpty }.joined(separator: " ")
+        guard !text.isEmpty else { throw ProviderError.noTranscript }
+        return TranscriptionResult(
+            text: text, detectedLanguage: order.compactMap { languages[$0] }.first,
+            duration: durations.isEmpty ? nil : durations.values.reduce(0, +),
+            providerName: settings.provider.rawValue, modelName: settings.model
+        )
+    }
+
+    static func providerError(_ event: [String: Any]) -> ProviderError {
+        let error = event["error"] as? [String: Any] ?? [:]
+        let code = error["code"] as? String ?? "UNKNOWN_ERROR"
+        switch code {
+        case "INVALID_API_KEY": return .http(401, code)
+        case "INSUFFICIENT_CREDITS": return .http(402, code)
+        case "PARTNER_ACCESS_REQUIRED":
+            return .unsupported("This Nari Labs model requires Partner access. Choose a model ending in :free.")
+        case "FREE_DAILY_LIMIT_EXCEEDED":
+            return .unsupported("Nari Labs' free daily allowance is exhausted. It resets at 00:00 UTC.")
+        case "MODEL_NOT_FOUND": return .unsupported("The selected Nari Labs model is unavailable. Choose another model.")
+        default:
+            return .unsupported("Nari Labs: \(code). \(error["message"] as? String ?? "Transcription failed.")")
         }
     }
 }
@@ -1130,34 +1305,26 @@ private func result(
     )
 }
 
-/// Strip RIFF/WAV container for APIs that want raw LINEAR16 PCM.
-/// Dictabar records mono 16-bit LE PCM @ 16 kHz — standard 44-byte header, or "data" chunk.
-private func linear16PCM(fromWAV url: URL) throws -> Data {
-    let data = try Data(contentsOf: url)
-    guard data.count > 44,
-          data.starts(with: Data("RIFF".utf8)),
-          data.count >= 12,
-          data[8..<12] == Data("WAVE".utf8) else {
-        return data
+/// Decode the WAV container rather than assuming a fixed 44-byte header.
+/// Core Audio WAVs may contain extra chunks and padding before the audio data.
+func linear16PCM(fromWAV url: URL) throws -> Data {
+    let file = try AVAudioFile(forReading: url, commonFormat: .pcmFormatInt16, interleaved: true)
+    guard file.processingFormat.sampleRate == 16_000,
+          file.processingFormat.channelCount == 1,
+          let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4_096) else {
+        throw ProviderError.unsupported("This provider requires a mono 16 kHz recording.")
     }
-    // Walk chunks after "WAVE" until "data".
-    var offset = 12
-    while offset + 8 <= data.count {
-        let id = data[offset..<(offset + 4)]
-        let size = Int(data[offset + 4])
-            | (Int(data[offset + 5]) << 8)
-            | (Int(data[offset + 6]) << 16)
-            | (Int(data[offset + 7]) << 24)
-        let payloadStart = offset + 8
-        let payloadEnd = min(payloadStart + max(size, 0), data.count)
-        if id == Data("data".utf8) {
-            return data.subdata(in: payloadStart..<payloadEnd)
+    var data = Data()
+    while file.framePosition < file.length {
+        try Task.checkCancellation()
+        try file.read(into: buffer)
+        guard buffer.frameLength > 0, let samples = buffer.int16ChannelData?[0] else {
+            throw ProviderError.unsupported("Could not read the recording's PCM audio.")
         }
-        // Chunks are word-aligned.
-        offset = payloadEnd + (size & 1)
+        data.append(UnsafeBufferPointer(start: UnsafeRawPointer(samples).assumingMemoryBound(to: UInt8.self),
+                                        count: Int(buffer.frameLength) * 2))
     }
-    // Fallback for our fixed recorder layout.
-    return data.subdata(in: 44..<data.count)
+    return data
 }
 
 private func audioDuration(from url: URL) -> TimeInterval? {

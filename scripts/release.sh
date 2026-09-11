@@ -91,8 +91,9 @@ if [[ -d "$SPARKLE_FRAMEWORK" ]]; then
 fi
 
 SHORT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_SRC/Contents/Info.plist")
-if [[ "$SHORT" != "$VERSION" ]]; then
-  echo "Version mismatch pbx=$VERSION app=$SHORT" >&2
+APP_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_SRC/Contents/Info.plist")
+if [[ "$SHORT" != "$VERSION" || "$APP_BUILD" != "$BUILD" ]]; then
+  echo "Version mismatch pbx=$VERSION/$BUILD app=$SHORT/$APP_BUILD" >&2
   exit 1
 fi
 
@@ -155,8 +156,8 @@ if [[ "$GITHUB" == "1" ]]; then
   fi
   release_tag="v${VERSION}"
   if gh release view "${release_tag}" --repo "$UPDATE_REPO" >/dev/null 2>&1; then
-    echo "-> Release ${release_tag} exists - uploading asset"
-    gh release upload "${release_tag}" "$ZIP" --repo "$UPDATE_REPO" --clobber
+    echo "Release ${release_tag} already exists; use a new version to preserve published update signatures." >&2
+    exit 1
   else
     echo "-> Creating GitHub release ${release_tag}"
     gh release create "${release_tag}" "$ZIP" \

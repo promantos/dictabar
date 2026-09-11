@@ -26,6 +26,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
     case gradium = "Gradium"
     case modulate = "Modulate"
     case cohere = "Cohere"
+    case nariLabs = "Nari Labs"
     case cloudflare = "Cloudflare Workers AI"
     case custom = "Custom OpenAI-compatible"
 
@@ -129,6 +130,13 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
             modelList(["velma-2-stt-batch"], LanguageCatalog.modulate)
         case .cohere:
             modelList(["cohere-transcribe-03-2026"], ["en", "de", "fr", "it", "es", "pt", "el", "nl", "pl", "vi", "zh", "ar", "ja", "ko"])
+        case .nariLabs:
+            [
+                SpeechModelInfo(id: "qwen3-asr-fast:free", languageCodes: LanguageCatalog.nari),
+                SpeechModelInfo(id: "qwen3-asr:free", languageCodes: LanguageCatalog.nari),
+                SpeechModelInfo(id: "qwen3-asr-fast", languageCodes: LanguageCatalog.nari, note: "Partner access required"),
+                SpeechModelInfo(id: "qwen3-asr", languageCodes: LanguageCatalog.nari, note: "Partner access required")
+            ]
         case .cloudflare:
             modelList(["@cf/openai/whisper-large-v3-turbo", "@cf/openai/whisper"], LanguageCatalog.whisper)
         case .custom:
@@ -164,6 +172,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         case .gradium: "https://api.gradium.ai/api"
         case .modulate: "https://modulate-developer-apis.com/api"
         case .cohere: "https://api.cohere.com/v2"
+        case .nariLabs: "https://api.narilabs.com/v1"
         // Replace ACCOUNT_ID in Settings.
         case .cloudflare: "https://api.cloudflare.com/client/v4/accounts/ACCOUNT_ID/ai/run"
         case .custom: "https://api.openai.com/v1"
@@ -198,6 +207,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         case .gradium: ["gradium.ai"]
         case .modulate: ["modulate-developer-apis.com", "modulate.ai"]
         case .cohere: ["cohere.com", "cohere.ai"]
+        case .nariLabs: ["api.narilabs.com"]
         case .cloudflare: ["cloudflare.com"]
         case .custom: [] // any https
         }
@@ -265,7 +275,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
             .local
         case .groq, .deepgram, .mistral, .elevenLabs, .gladia, .speechmatics,
                 .assemblyAI, .soniox, .cartesia, .gradium, .modulate, .cohere,
-                .smallestAI, .inworld:
+                .smallestAI, .inworld, .nariLabs:
             .freeEasy
         case .openAI, .xAI:
             .paidEasy
@@ -286,7 +296,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
             order = [
                 .groq, .deepgram, .mistral, .elevenLabs, .gladia, .speechmatics,
                 .assemblyAI, .soniox, .cartesia, .gradium, .modulate, .cohere,
-                .smallestAI, .inworld
+                .smallestAI, .inworld, .nariLabs
             ]
         case .paidEasy:
             order = [.openAI, .xAI]
@@ -321,6 +331,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         case .gradium: "45K credits / month"
         case .modulate: "Free credits"
         case .cohere: "Free trial key"
+        case .nariLabs: "Free daily allowance"
         case .cloudflare: "10K neurons / day"
         case .openAI, .xAI, .openRouter, .custom: "Paid"
         }
@@ -363,6 +374,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         case .gradium: value = "https://gradium.ai/"
         case .modulate: value = "https://platform.modulate.ai/"
         case .cohere: value = "https://dashboard.cohere.com/api-keys"
+        case .nariLabs: value = "https://app.narilabs.com/keys"
         case .cloudflare: value = "https://dash.cloudflare.com/profile/api-tokens"
         case .custom: value = "https://platform.openai.com/api-keys"
         }
@@ -377,6 +389,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         case .smallestAI: "Fast file transcription; Pulse Pro is tuned for English."
         case .xAI: "Simple file STT with keyterm prompting."
         case .cohere: "New multilingual file transcription API."
+        case .nariLabs: "Qwen3-ASR transcription over a secure WebSocket. Supports Russian and automatic language detection."
         default: "File-based speech-to-text for completed dictation recordings."
         }
     }
@@ -502,6 +515,8 @@ private enum LanguageCatalog {
     static let parakeetEU = parakeetLocal
     static let qwenOpenRouter = ["ar", "de", "en", "es", "fr", "it", "ja", "ko", "pt", "ru", "zh"]
     static let smallestPulse = ["en", "hi", "de", "es", "ru", "it", "fr", "nl", "pt", "uk", "pl", "cs", "sk", "lv", "et", "ro", "fi", "sv", "bg", "hu", "da", "lt", "mt", "zh", "ja", "ko"]
+    // Nari session.language enum, verified against its realtime API reference.
+    static let nari = ["ar", "cs", "da", "de", "el", "en", "es", "fa", "fi", "fil", "fr", "hi", "hu", "id", "it", "ja", "ko", "mk", "ms", "nl", "pl", "pt", "ro", "ru", "sv", "th", "tr", "vi", "yue", "zh"]
     static let qwenASR = ["ar", "bn", "ca", "cs", "da", "de", "el", "en", "es", "fa", "fi", "fr", "gu", "he", "hi", "hu", "id", "it", "ja", "ko", "lt", "ml", "mr", "nl", "no", "pa", "pl", "pt", "ro", "ru", "sk", "sv", "ta", "te", "th", "tr", "uk", "ur", "vi", "yue", "zh"]
     static let xAI = ["ar", "cs", "da", "de", "en", "es", "fi", "fr", "hi", "hu", "id", "it", "ja", "ko", "nl", "no", "pl", "pt", "ro", "ru", "sv", "th", "tr", "vi", "zh"]
     static let amazon = whisper

@@ -162,7 +162,7 @@ final class DictationController {
         DiagnosticsLogger.shared.log("dictation start session=\(id)")
 
         guard await ensurePermissions() else {
-            if case .starting = appState.dictationState { appState.dictationState = .idle }
+            if sessionID == id, case .starting = appState.dictationState { appState.dictationState = .idle }
             return
         }
         guard !Task.isCancelled, sessionID == id else { return }
@@ -316,6 +316,10 @@ final class DictationController {
                 DiagnosticsLogger.shared.log("pipeline: stop recorder")
                 audioURL = try await recorder.stop()
             }
+            guard sessionID == id, !Task.isCancelled else {
+                if finalizedAudioURL == nil { cleanup(audioURL) }
+                return
+            }
             activeAudioURL = audioURL
             let size = (try? audioURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             DiagnosticsLogger.shared.log("pipeline: audio size=\(size)")
@@ -370,6 +374,7 @@ final class DictationController {
                     // Use live store so clipboard/appearance toggles apply immediately.
                     try await TextInsertionService.insert(result.text, settings: settingsStore)
                 } catch {
+                    try Task.checkCancellation()
                     if copyOnFail { TextInsertionService.copy(result.text) }
                     throw error
                 }
@@ -408,6 +413,9 @@ final class DictationController {
                 "metric: outcome=success provider=\(providerKind.rawValue) latency_ms=\(Int(elapsed * 1000))"
             )
         } catch is CancellationError {
+            // cancel() already cleaned the old session. A newer recording may
+            // now own the shared audio URL, overlay and clipboard restore state.
+            guard sessionID == id else { return }
             TextInsertionService.restoreClipboardIfNeeded()
             if finalizedAudioURL == nil {
                 cleanup(activeAudioURL)
@@ -422,6 +430,7 @@ final class DictationController {
             }
             DiagnosticsLogger.shared.log("pipeline: cancelled")
         } catch {
+            guard sessionID == id else { return }
             TextInsertionService.restoreClipboardIfNeeded()
             let existingActiveAudioURL = activeAudioURL.flatMap {
                 FileManager.default.fileExists(atPath: $0.path) ? $0 : nil

@@ -312,7 +312,7 @@ enum TextInsertionService {
         ) == .success,
         let focused,
         CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
-        return focused as! AXUIElement
+        return (focused as! AXUIElement)
     }
 
     private static func accessibilityTextTarget(

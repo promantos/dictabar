@@ -41,7 +41,7 @@ in place with Sparkle. Dictabar does not require a DMG or installer package.
 
 - **Works everywhere** — dictate into browsers, editors, messengers, terminals,
   documents, and any other app that accepts text.
-- **Local or cloud** — use on-device speech models or choose from 25 cloud and
+- **Local or cloud** — use on-device speech models or choose from 26 cloud and
   self-hosted providers.
 - **Bring your own key** — Dictabar does not proxy your audio through a
   Dictabar server.
@@ -86,8 +86,14 @@ repository and remain under the model publisher's license; see
 
 Supported providers include OpenAI, Groq, Deepgram, Mistral, Soniox, Gladia,
 Speechmatics, ElevenLabs, AssemblyAI, OpenRouter, Azure Speech, Google Cloud,
-Fireworks, Together, xAI, Amazon Transcribe, Cloudflare Workers AI, and a custom
+Fireworks, Together, xAI, Nari Labs, Amazon Transcribe, Cloudflare Workers AI, and a custom
 OpenAI-compatible endpoint.
+
+Nari Labs supports Qwen3-ASR Standard and Fast, with free models selected by
+IDs ending in `:free`. Partner models require access from Nari Labs. Add your key
+from [Nari Labs](https://app.narilabs.com/keys) in Settings → Providers.
+Dictabar sends the completed recording over a secure WebSocket and waits for all
+final transcript segments, including recordings longer than 36 seconds.
 
 Cloud providers receive the completed recording directly from Dictabar. Their
 pricing, retention, and data-processing terms apply.
