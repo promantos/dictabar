@@ -35,6 +35,17 @@ VERSION=$(grep -m1 'MARKETING_VERSION' "$PBX" | sed -E 's/.*MARKETING_VERSION = 
 BUILD=$(grep -m1 'CURRENT_PROJECT_VERSION' "$PBX" | sed -E 's/.*CURRENT_PROJECT_VERSION = ([^;]+);/\1/')
 echo "→ Dictabar $VERSION ($BUILD)"
 
+# A locally installed candidate can be newer than the public feed. Sparkle must
+# see a strictly higher build on the release Mac as well.
+INSTALLED_INFO="/Applications/Dictabar.app/Contents/Info.plist"
+if [[ "$GITHUB" == "1" && -f "$INSTALLED_INFO" ]]; then
+  INSTALLED_BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INSTALLED_INFO")
+  if [[ "$INSTALLED_BUILD" =~ ^[0-9]+$ && "$BUILD" -le "$INSTALLED_BUILD" ]]; then
+    echo "Build $BUILD must exceed installed build $INSTALLED_BUILD before publishing an update." >&2
+    exit 1
+  fi
+fi
+
 APP_SRC="build/DerivedData/Build/Products/Release/Dictabar.app"
 ZIP="build/Dictabar-${VERSION}.zip"
 APPCAST="build/appcast.xml"
