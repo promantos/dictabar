@@ -34,6 +34,8 @@ enum ProviderConnectionTester {
                 try await provider.transcribe(audioURL: url, settings: settings, apiKey: apiKey)
             }
         } catch ProviderError.noTranscript {
+            // Supplied speech must produce text; only the built-in silence probe may be empty.
+            if audioURL != nil { throw ProviderError.noTranscript }
             // Authentication, upload and model selection all succeeded; silence is
             // expected to have no transcript and therefore proves connectivity.
             return L10n.t("prov.testEmptyOK")

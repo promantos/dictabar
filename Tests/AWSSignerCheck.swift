@@ -33,7 +33,18 @@ enum AWSSignerCheck {
         precondition(LocalSpeechModel.qwen.languageCodes.count == 30)
         precondition(LocalSpeechModel.moss.languageCodes.isEmpty)
         precondition(LocalSpeechModel.moss.reportedLanguageCount == "50+")
-        print("AWS SigV4 official test vector OK.")
+        precondition(SpeechProvider.assemblyAI.resolvedModel("universal-3-pro") == "universal-3-5-pro")
+        precondition(SpeechProvider.mistral.resolvedModel("voxtral-mini-latest") == "voxtral-mini-2602")
+        precondition(SpeechProvider.azureSpeech.resolvedModel("mai-transcribe-1") == "mai-transcribe-2")
+        precondition(SpeechProvider.googleCloud.resolvedModel("chirp_2") == "latest_long")
+        precondition(SpeechProvider.gemini.modelInfos[0].languageCodes.contains("ru"))
+        precondition(Set(ProviderGroup.allCases.flatMap(SpeechProvider.providers)).count == SpeechProvider.allCases.count)
+        for provider in SpeechProvider.allCases where provider != .custom {
+            precondition(provider.sanitizedBaseURL("https://malicious.example") == provider.defaultBaseURL)
+        }
+        print("AWS SigV4 official test vector and saved model migrations OK.")
+        try NewProviderFixtures.check()
+        try checkGeminiProviderFixtures()
         try checkNariState()
         try checkPCM()
         if CommandLine.arguments.count > 1 {

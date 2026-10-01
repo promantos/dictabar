@@ -8,16 +8,16 @@
 
     <!-- Newest item first. release.sh rewrites this file. -->
     <item>
-      <title>Dictabar 0.6.25</title>
-      <sparkle:version>41</sparkle:version>
-      <sparkle:shortVersionString>0.6.25</sparkle:shortVersionString>
-      <pubDate>Fri, 11 Sep 2026 19:02:11 +0000</pubDate>
+      <title>Dictabar 0.6.26</title>
+      <sparkle:version>42</sparkle:version>
+      <sparkle:shortVersionString>0.6.26</sparkle:shortVersionString>
+      <pubDate>Thu, 01 Oct 2026 17:17:19 +0000</pubDate>
       <enclosure
-        url="https://github.com/promantos/dictabar-updates/releases/download/v0.6.25/Dictabar-0.6.25.zip"
-        sparkle:version="41"
-        sparkle:shortVersionString="0.6.25"
-        length="13844660"
-        sparkle:edSignature="7mXbzf3cyGcQmzwbMtF1mSYizFYZ4oGt7mOYfah5wRIq+zBztSsp7iNH6BCdbdCKObdRKdgK06a+yNQD/Ii0Dw=="
+        url="https://github.com/promantos/dictabar-updates/releases/download/v0.6.26/Dictabar-0.6.26.zip"
+        sparkle:version="42"
+        sparkle:shortVersionString="0.6.26"
+        length="13873771"
+        sparkle:edSignature="tSsoM88YcQXmGqabzsRSzrfUT1UBL/dspEkNbAR8bGSwcXmnIVQ0J2Ddr1Qqw0NV2yw8iXn6aPBrv2xX9O2LBA=="
         type="application/octet-stream"
       />
     </item>

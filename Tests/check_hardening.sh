@@ -9,9 +9,9 @@ fail() {
 providers="Dictabar/TranscriptionProviders.swift"
 models="Dictabar/Models.swift"
 
-grep -q '"speech_models": \[settings.model\]' "$providers" \
+grep -q '"speech_models": settings.model' "$providers" \
   || fail "AssemblyAI must use speech_models"
-grep -q 'universal-3-pro' "$models" || fail "AssemblyAI current models missing"
+grep -q 'universal-3-5-pro' "$models" || fail "AssemblyAI current models missing"
 ! grep -q 'modelList(\["universal", "nano", "best"\]' "$models" \
   || fail "deprecated AssemblyAI models returned"
 

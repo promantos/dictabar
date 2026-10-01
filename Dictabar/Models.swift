@@ -15,6 +15,9 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
     case openRouter = "OpenRouter"
     case azureSpeech = "Azure Speech"
     case googleCloud = "Google Cloud STT"
+    case gemini = "Google Gemini"
+    case reson8 = "Reson8"
+    case stepFun = "StepFun"
     case fireworks = "Fireworks"
     case together = "Together"
     case smallestAI = "Smallest AI"
@@ -46,7 +49,7 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
     /// Bound those requests; file/multipart providers retain their normal 25 MB ceiling.
     var maximumUploadBytes: Int {
         switch self {
-        case .googleCloud, .alibaba, .inworld, .cloudflare:
+        case .googleCloud, .alibaba, .inworld, .cloudflare, .stepFun:
             12 * 1024 * 1024
         default:
             25 * 1024 * 1024
@@ -64,24 +67,26 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
                 )
             }
         case .openAI:
-            modelList(["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"], LanguageCatalog.whisper)
+            modelList(["gpt-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"], LanguageCatalog.whisper)
         case .groq:
             modelList(["whisper-large-v3-turbo", "whisper-large-v3"], LanguageCatalog.whisper)
         case .deepgram:
             // Flux is realtime-only; Dictabar intentionally exposes file-capable Nova.
             modelList(["nova-3"], LanguageCatalog.deepgram)
         case .mistral:
-            modelList(["voxtral-mini-latest", "voxtral-small-latest"], LanguageCatalog.voxtral)
+            modelList(["voxtral-mini-2602", "voxtral-small-latest"], LanguageCatalog.voxtral)
         case .soniox:
             modelList(["stt-async-v5"], LanguageCatalog.soniox)
         case .gladia:
-            modelList(["solaria-1"], LanguageCatalog.whisper)
+            [SpeechModelInfo(id: "solaria-1", languageCodes: LanguageCatalog.whisper),
+             SpeechModelInfo(id: "solaria-3", languageCodes: ["en", "fr", "de", "es", "it"])]
         case .speechmatics:
-            modelList(["enhanced", "standard"], LanguageCatalog.speechmatics)
+            modelList(["enhanced", "melia-1", "standard"], LanguageCatalog.speechmatics)
         case .elevenLabs:
             modelList(["scribe_v2", "scribe_v1"], LanguageCatalog.whisper)
         case .assemblyAI:
-            modelList(["universal-3-pro", "universal-2"], LanguageCatalog.assembly)
+            [SpeechModelInfo(id: "universal-3-5-pro", languageCodes: ["en", "es", "fr", "de", "it", "pt", "ar", "da", "nl", "fi", "he", "hi", "ja", "zh", "no", "sv", "tr", "vi"], note: "Other languages use Universal-2"),
+             SpeechModelInfo(id: "universal-2", languageCodes: LanguageCatalog.assembly)]
         case .openRouter:
             [
                 SpeechModelInfo(id: "openai/whisper-large-v3", languageCodes: LanguageCatalog.whisper),
@@ -99,12 +104,18 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
             ]
         case .azureSpeech:
             [
+                SpeechModelInfo(id: "mai-transcribe-2", languageCodes: LanguageCatalog.azureMAI2, note: "Public preview"),
                 SpeechModelInfo(id: "mai-transcribe-1.5", languageCodes: LanguageCatalog.azureMAI15, note: "Public preview"),
-                SpeechModelInfo(id: "mai-transcribe-1", languageCodes: LanguageCatalog.azureMAI1, note: "Public preview"),
                 SpeechModelInfo(id: "fast-transcription", languageCodes: LanguageCatalog.azureFast)
             ]
         case .googleCloud:
-            modelList(["latest_long", "latest_short", "chirp_2"], LanguageCatalog.google)
+            modelList(["latest_long", "latest_short"], LanguageCatalog.google)
+        case .gemini:
+            [SpeechModelInfo(id: "gemini-3.5-transcribe", languageCodes: LanguageCatalog.gemini, note: "Automatic language detection and code-switching")]
+        case .reson8:
+            modelList(["resonant-1"], ["nl", "en", "fr", "fy", "de", "it", "pl", "pt", "es", "sv"])
+        case .stepFun:
+            modelList(["stepaudio-3-asr-max", "stepaudio-2.5-asr"], ["zh", "en"])
         case .fireworks:
             modelList(["whisper-v3", "whisper-v3-turbo"], LanguageCatalog.whisper)
         case .together:
@@ -160,6 +171,9 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         // Region is part of host — change to your Speech resource region.
         case .azureSpeech: "https://eastus.api.cognitive.microsoft.com"
         case .googleCloud: "https://speech.googleapis.com/v1"
+        case .gemini: "https://generativelanguage.googleapis.com/v1beta"
+        case .reson8: "https://api.reson8.dev/v1"
+        case .stepFun: "https://api.stepfun.com/v1"
         case .fireworks: "https://audio-prod.api.fireworks.ai/v1"
         case .together: "https://api.together.xyz/v1"
         case .smallestAI: "https://api.smallest.ai/waves/v1"
@@ -196,6 +210,9 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         // Azure regional hosts: *.api.cognitive.microsoft.com / *.cognitiveservices.azure.com
         case .azureSpeech: ["api.cognitive.microsoft.com", "cognitiveservices.azure.com"]
         case .googleCloud: ["googleapis.com"]
+        case .gemini: ["generativelanguage.googleapis.com"]
+        case .reson8: ["api.reson8.dev"]
+        case .stepFun: ["stepfun.com", "stepfun.ai"]
         case .fireworks: ["fireworks.ai"]
         case .together: ["together.xyz", "together.ai"]
         case .smallestAI: ["smallest.ai"]
@@ -275,9 +292,9 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
             .local
         case .groq, .deepgram, .mistral, .elevenLabs, .gladia, .speechmatics,
                 .assemblyAI, .soniox, .cartesia, .gradium, .modulate, .cohere,
-                .smallestAI, .inworld, .nariLabs:
+                .smallestAI, .inworld, .nariLabs, .reson8:
             .freeEasy
-        case .openAI, .xAI:
+        case .openAI, .xAI, .gemini, .stepFun:
             .paidEasy
         case .openRouter, .fireworks, .together, .custom:
             .routers
@@ -296,10 +313,10 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
             order = [
                 .groq, .deepgram, .mistral, .elevenLabs, .gladia, .speechmatics,
                 .assemblyAI, .soniox, .cartesia, .gradium, .modulate, .cohere,
-                .smallestAI, .inworld, .nariLabs
+                .smallestAI, .inworld, .nariLabs, .reson8
             ]
         case .paidEasy:
-            order = [.openAI, .xAI]
+            order = [.openAI, .xAI, .gemini, .stepFun]
         case .routers:
             order = [.openRouter, .fireworks, .together, .custom]
         case .cloud:
@@ -321,6 +338,8 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         case .assemblyAI: "$50 trial credit"
         case .azureSpeech: "Azure free account credit"
         case .googleCloud: "60 min / month"
+        case .gemini, .stepFun: "Paid"
+        case .reson8: "10 h / month"
         case .fireworks: "Trial credit"
         case .together: "Trial credit"
         case .smallestAI: "$10 signup credit"
@@ -363,6 +382,9 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         case .openRouter: value = "https://openrouter.ai/settings/keys"
         case .azureSpeech: value = "https://portal.azure.com/#create/Microsoft.CognitiveServicesSpeechServices"
         case .googleCloud: value = "https://console.cloud.google.com/apis/credentials"
+        case .gemini: value = "https://aistudio.google.com/apikey"
+        case .reson8: value = "https://console.reson8.dev/"
+        case .stepFun: value = "https://platform.stepfun.com/"
         case .fireworks: value = "https://fireworks.ai/account/api-keys"
         case .together: value = "https://api.together.ai/settings/api-keys"
         case .smallestAI: value = "https://waves.smallest.ai/"
@@ -389,9 +411,25 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         case .smallestAI: "Fast file transcription; Pulse Pro is tuned for English."
         case .xAI: "Simple file STT with keyterm prompting."
         case .cohere: "New multilingual file transcription API."
+        case .gemini: "Gemini speech transcription with automatic language detection and code-switching."
+        case .reson8: "Fast European-language transcription with a direct file API."
+        case .stepFun: "StepAudio transcription for Chinese and English recordings."
         case .nariLabs: "Qwen3-ASR transcription over a secure WebSocket. Supports Russian and automatic language detection."
         default: "File-based speech-to-text for completed dictation recordings."
         }
+    }
+
+    /// Preserve saved choices while migrating retired or ambiguous model names.
+    func resolvedModel(_ saved: String?) -> String {
+        var candidate = saved ?? ""
+        switch (self, candidate) {
+        case (.assemblyAI, "universal-3-pro"): candidate = "universal-3-5-pro"
+        case (.mistral, "voxtral-mini-latest"): candidate = "voxtral-mini-2602"
+        case (.azureSpeech, "mai-transcribe-1"): candidate = "mai-transcribe-2"
+        case (.googleCloud, "chirp_2"): candidate = "latest_long"
+        default: break
+        }
+        return models.contains(candidate) ? candidate : models[0]
     }
 
     private func modelList(_ ids: [String], _ languages: [String]) -> [SpeechModelInfo] {
@@ -506,8 +544,10 @@ private enum LanguageCatalog {
     static let speechmatics = whisper
     static let assembly = ["en", "es", "fr", "de", "it", "pt", "nl", "hi", "ja", "zh", "fi", "ko", "pl", "ru", "tr", "uk", "vi"]
     static let azureMAI1 = ["ar", "zh", "cs", "da", "nl", "en", "fi", "fr", "de", "hi", "hu", "id", "it", "ja", "ko", "nb", "pl", "pt", "ro", "ru", "es", "sv", "th", "tr", "vi"]
+    static let azureMAI2 = ["af", "ar", "as", "az", "bg", "bn", "bs", "ca", "cs", "da", "de", "el", "en", "es", "et", "fa", "fil", "fi", "fr", "gl", "gu", "he", "hi", "hu", "hy", "id", "is", "it", "ja", "kk", "kn", "ko", "lt", "lv", "mk", "ml", "mr", "ms", "nb", "ne", "nl", "or", "pa", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "sw", "ta", "te", "th", "tr", "uk", "ur", "vi", "yue", "zh"]
     static let azureMAI15 = ["ar", "as", "bg", "bn", "ca", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "gu", "hi", "hu", "id", "it", "ja", "kn", "ko", "lt", "ml", "mr", "nb", "nl", "or", "pa", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "ta", "te", "th", "tr", "uk", "vi", "zh"]
     static let azureFast = whisper
+    static let gemini = ["af", "am", "ar", "hy", "as", "az", "be", "bn", "bs", "bg", "rup", "my", "yue", "ca", "zh", "ceb", "km", "hr", "cs", "da", "nl", "en", "et", "fa", "fil", "fi", "fr", "gl", "ka", "de", "el", "gu", "ha", "he", "hi", "hu", "is", "id", "it", "ja", "jv", "kea", "kn", "kk", "ko", "ky", "lv", "ln", "lt", "mk", "ms", "ml", "mt", "mr", "mn", "ne", "nb", "or", "pl", "pt", "pa", "ro", "ru", "sr", "sd", "sk", "sl", "es", "sw", "sv", "tg", "te", "th", "tr", "uk", "uz", "vi"]
     static let google = whisper
     static let parakeetLocal = ["en", "es", "fr", "de", "bg", "hr", "cs", "da", "nl", "et", "fi", "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk", "sl", "sv", "ru", "uk"]
     static let nemotronLocal = ["ar", "bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "he", "hi", "hr", "hu", "it", "ja", "ko", "lt", "lv", "mt", "nl", "no", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "th", "tr", "uk", "vi", "zh"]

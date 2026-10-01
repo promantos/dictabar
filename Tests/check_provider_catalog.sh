@@ -9,7 +9,7 @@ trap 'rm -rf "$check_dir"' EXIT
 
 expected=(
   local openAI groq deepgram mistral soniox gladia speechmatics elevenLabs assemblyAI
-  openRouter azureSpeech googleCloud fireworks together smallestAI alibaba xAI
+  openRouter azureSpeech googleCloud gemini reson8 stepFun fireworks together smallestAI alibaba xAI
   amazonTranscribe inworld cartesia gradium modulate cohere nariLabs cloudflare custom
 )
 
@@ -47,8 +47,8 @@ fi
 ! grep -q 'stt-rt-' "$models"
 
 key_links="$(grep -c 'case .*value = "https://' "$models")"
-[[ "$key_links" -eq 27 ]] || {
-  echo "Expected 27 provider links, found $key_links" >&2
+[[ "$key_links" -eq 30 ]] || {
+  echo "Expected 30 provider links, found $key_links" >&2
   exit 1
 }
 
@@ -79,7 +79,11 @@ xcrun swiftc \
   "$root/Dictabar/MultipartFormData.swift" \
   "$root/Dictabar/DiagnosticsLogger.swift" \
   "$providers" \
+  "$root/Dictabar/GeminiTranscriptionProvider.swift" \
+  "$root/Dictabar/NewTranscriptionProviders.swift" \
   "$root/Tests/AWSSignerCheck.swift" \
+  "$root/Tests/NewProviderFixtures.swift" \
+  "$root/Tests/GeminiProviderFixtures.swift" \
   -o "$check_dir/aws-signer-check"
 if [[ "${NARI_WEBSOCKET_TEST:-0}" == "1" ]]; then
   python3 "$root/Tests/nari_websocket_server.py" "$check_dir/port" >"$check_dir/server.log" 2>&1 &
@@ -89,6 +93,11 @@ if [[ "${NARI_WEBSOCKET_TEST:-0}" == "1" ]]; then
     [[ -s "$check_dir/port" ]] && break
     sleep 0.1
   done
+  if [[ ! -s "$check_dir/port" ]]; then
+    cat "$check_dir/server.log" >&2
+    echo "WebSocket fixture server failed to start." >&2
+    exit 1
+  fi
   "$check_dir/aws-signer-check" "$(cat "$check_dir/port")"
   if [[ -s "$check_dir/server.log" ]]; then cat "$check_dir/server.log"; exit 1; fi
 else
@@ -111,4 +120,4 @@ ruby -e '
   end
 ' "$root/Dictabar/L10n.swift"
 
-echo "Provider catalog OK: 27 providers, 4 local choices with verified language counts, complete localization, single-model runtime, file and WebSocket adapters, links, and compatible models."
+echo "Provider catalog OK: 30 providers, 4 local choices with verified language counts, complete localization, single-model runtime, file and WebSocket adapters, links, and compatible models."

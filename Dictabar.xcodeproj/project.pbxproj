@@ -42,6 +42,8 @@
 		FD2000100000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = FD2000200000000000000001 /* Sparkle */; };
 		FD3000100000000000000001 /* LICENSE in Resources */ = {isa = PBXBuildFile; fileRef = FD3000200000000000000001 /* LICENSE */; };
 		FD3000100000000000000002 /* THIRD_PARTY_NOTICES.md in Resources */ = {isa = PBXBuildFile; fileRef = FD3000200000000000000002 /* THIRD_PARTY_NOTICES.md */; };
+		FD0000100000000000000030 /* GeminiTranscriptionProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD0000200000000000000030 /* GeminiTranscriptionProvider.swift */; };
+		FD0000100000000000000031 /* NewTranscriptionProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = FD0000200000000000000031 /* NewTranscriptionProviders.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -76,6 +78,8 @@
 		FD0000200000000000000029 /* LocalModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalModels.swift; sourceTree = "<group>"; };
 		FD3000200000000000000001 /* LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
 		FD3000200000000000000002 /* THIRD_PARTY_NOTICES.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = THIRD_PARTY_NOTICES.md; sourceTree = "<group>"; };
+		FD0000200000000000000030 /* GeminiTranscriptionProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeminiTranscriptionProvider.swift; sourceTree = "<group>"; };
+		FD0000200000000000000031 /* NewTranscriptionProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewTranscriptionProviders.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -117,6 +121,8 @@
 				FD0000200000000000000027 /* TranscriptHistoryStore.swift */,
 				FD0000200000000000000028 /* ProviderConnectionTester.swift */,
 				FD0000200000000000000029 /* LocalModels.swift */,
+				FD0000200000000000000031 /* NewTranscriptionProviders.swift */,
+				FD0000200000000000000030 /* GeminiTranscriptionProvider.swift */,
 				FD0000200000000000000004 /* AudioRecorder.swift */,
 				FD0000200000000000000005 /* GlobalShortcutManager.swift */,
 				FD0000200000000000000006 /* TextInsertionService.swift */,
@@ -240,6 +246,8 @@
 				FD0000100000000000000027 /* TranscriptHistoryStore.swift in Sources */,
 				FD0000100000000000000028 /* ProviderConnectionTester.swift in Sources */,
 				FD0000100000000000000029 /* LocalModels.swift in Sources */,
+				FD0000100000000000000031 /* NewTranscriptionProviders.swift in Sources */,
+				FD0000100000000000000030 /* GeminiTranscriptionProvider.swift in Sources */,
 				FD0000100000000000000004 /* AudioRecorder.swift in Sources */,
 				FD0000100000000000000005 /* GlobalShortcutManager.swift in Sources */,
 				FD0000100000000000000006 /* TextInsertionService.swift in Sources */,
@@ -301,7 +309,7 @@
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 41;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = 8J49699RB4;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -311,7 +319,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.6.25;
+				MARKETING_VERSION = 0.6.26;
 				PRODUCT_BUNDLE_IDENTIFIER = app.dictabar.Dictabar;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;
@@ -327,7 +335,7 @@
 				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 41;
+				CURRENT_PROJECT_VERSION = 42;
 				DEVELOPMENT_TEAM = 8J49699RB4;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -337,7 +345,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.6.25;
+				MARKETING_VERSION = 0.6.26;
 				PRODUCT_BUNDLE_IDENTIFIER = app.dictabar.Dictabar;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 6.0;

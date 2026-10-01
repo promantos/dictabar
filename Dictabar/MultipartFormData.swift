@@ -22,9 +22,11 @@ final class MultipartFormData {
         try? FileManager.default.removeItem(at: fileURL)
     }
 
-    func addField(_ name: String, _ value: String) throws {
+    func addField(_ name: String, _ value: String, mimeType: String? = nil) throws {
         try append("--\(boundary)\r\n")
-        try append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n")
+        try append("Content-Disposition: form-data; name=\"\(name)\"\r\n")
+        if let mimeType { try append("Content-Type: \(mimeType)\r\n") }
+        try append("\r\n")
         try append("\(value)\r\n")
     }
 

@@ -77,6 +77,9 @@ enum ProviderRegistry {
         case .openRouter: OpenRouterTranscriptionProvider()
         case .azureSpeech: AzureSpeechTranscriptionProvider()
         case .googleCloud: GoogleCloudSTTTranscriptionProvider()
+        case .gemini: GeminiTranscriptionProvider()
+        case .reson8: Reson8TranscriptionProvider()
+        case .stepFun: StepFunTranscriptionProvider()
         case .fireworks: FireworksTranscriptionProvider()
         case .together: TogetherTranscriptionProvider()
         case .smallestAI: SmallestAITranscriptionProvider()
@@ -269,6 +272,14 @@ struct NariTranscriptState {
 }
 
 struct OpenAITranscriptionProvider: TranscriptionProvider {
+    static func languageField(model: String) -> String {
+        model == "gpt-transcribe" ? "languages[]" : "language"
+    }
+
+    static func detectedLanguage(_ json: [String: Any]) -> String? {
+        json["language"] as? String ?? (json["languages"] as? [[String: Any]])?.first?["code"] as? String
+    }
+
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
         try await OpenAICompatibleTranscriptionProvider().transcribe(audioURL: audioURL, settings: settings, apiKey: apiKey)
     }
@@ -303,8 +314,10 @@ private struct OpenAICompatibleTranscriptionProvider: TranscriptionProvider {
         let form = try MultipartFormData()
         try form.addFile("file", url: audioURL, mimeType: "audio/wav")
         try form.addField("model", settings.model)
-        if let language = settings.language.apiCode { try form.addField("language", language) }
-        try form.addField("response_format", "json")
+        if let language = settings.language.apiCode {
+            try form.addField(OpenAITranscriptionProvider.languageField(model: settings.model), language)
+        }
+        if settings.model != "gpt-transcribe" { try form.addField("response_format", "json") }
         try form.close()
 
         var request = URLRequest(url: url)
@@ -315,7 +328,7 @@ private struct OpenAICompatibleTranscriptionProvider: TranscriptionProvider {
         let json = try await send(request, bodyFile: form.fileURL)
         let text = json["text"] as? String
         guard let text, !text.isEmpty else { throw ProviderError.noTranscript }
-        return TranscriptionResult(text: text, detectedLanguage: json["language"] as? String, duration: json["duration"] as? TimeInterval, providerName: settings.provider.rawValue, modelName: settings.model)
+        return TranscriptionResult(text: text, detectedLanguage: OpenAITranscriptionProvider.detectedLanguage(json), duration: json["duration"] as? TimeInterval, providerName: settings.provider.rawValue, modelName: settings.model)
     }
 }
 
@@ -448,18 +461,19 @@ struct GladiaTranscriptionProvider: TranscriptionProvider {
 }
 
 struct SpeechmaticsTranscriptionProvider: TranscriptionProvider {
+    static func configuration(settings: ProviderSettings) -> [String: Any] {
+        let transcription: [String: Any] = settings.model == "melia-1"
+            ? ["model": "melia-1", "language": "multi"]
+            : ["language": settings.language.apiCode ?? "auto", "operating_point": settings.model]
+        return ["type": "transcription", "transcription_config": transcription]
+    }
+
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
         let speechmaticsBase = settings.provider.sanitizedBaseURL(settings.baseURL)
         guard let url = URL(string: speechmaticsBase + "/jobs") else { throw ProviderError.badURL }
 
-        let config: [String: Any] = [
-            "type": "transcription",
-            "transcription_config": [
-                "language": settings.language.apiCode ?? "auto",
-                "operating_point": settings.model
-            ]
-        ]
+        let config: [String: Any] = Self.configuration(settings: settings)
 
         let form = try MultipartFormData()
         try form.addField("config", String(data: try JSONSerialization.data(withJSONObject: config), encoding: .utf8) ?? "{}")
@@ -560,9 +574,64 @@ struct ElevenLabsTranscriptionProvider: TranscriptionProvider {
 /// Upload → create transcript → poll until completed.
 /// Docs: https://www.assemblyai.com/docs
 struct AssemblyAITranscriptionProvider: TranscriptionProvider {
+    /// Sync is a separate service; never rewrite a user-supplied proxy host.
+    static func syncURL(baseURL: String, model: String, duration: TimeInterval?, fileSize: Int) -> URL? {
+        guard model == "universal-3-5-pro", let duration, duration >= 0.08, duration <= 120,
+              fileSize <= 40_000_000,
+              let base = URLComponents(string: baseURL), base.scheme == "https",
+              base.port == nil, base.path.isEmpty || base.path == "/" else { return nil }
+        switch base.host {
+        case "api.assemblyai.com": return URL(string: "https://sync.us.assemblyai.com/v1/transcribe")
+        case "api.eu.assemblyai.com": return URL(string: "https://sync.eu.assemblyai.com/v1/transcribe")
+        default: return nil
+        }
+    }
+
+    static func shouldFallBackFromSync(_ error: ProviderError) -> Bool {
+        // Fall back only when this API or audio shape is unsupported, never on auth,
+        // billing, silence or timeout (which could duplicate a billed request).
+        if case let .http(status, _) = error { return [404, 405, 413, 415, 422].contains(status) }
+        return false
+    }
+
+    private func transcribeSync(audioURL: URL, url: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
+        let form = try MultipartFormData()
+        if let code = settings.language.apiCode {
+            let config = try JSONSerialization.data(withJSONObject: ["language_codes": [code]])
+            try form.addField("config", String(decoding: config, as: UTF8.self), mimeType: "application/json")
+        }
+        try form.addFile("audio", url: audioURL, mimeType: "audio/wav")
+        try form.close()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "Authorization")
+        request.setValue(settings.model, forHTTPHeaderField: "X-AAI-Model")
+        request.timeoutInterval = 35
+        try form.apply(to: &request)
+        let json = try await send(request, bodyFile: form.fileURL)
+        guard let text = json["text"] as? String, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ProviderError.noTranscript
+        }
+        return result(text, settings, language: json["language_code"] as? String,
+                      duration: (json["audio_duration_ms"] as? Double).map { $0 / 1000 })
+    }
+
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
         let base = settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let fileSize = (try? audioURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? Int.max
+        // Sync defaults to English. Automatic language detection stays on the async
+        // API so multilingual recordings are never silently biased to English.
+        if let code = settings.language.apiCode,
+           ["en", "es", "fr", "de", "it", "pt", "ar", "da", "nl", "fi", "he", "hi", "ja", "zh", "no", "sv", "tr", "vi"].contains(code),
+           let sync = Self.syncURL(baseURL: base, model: settings.model,
+                                   duration: audioDuration(from: audioURL), fileSize: fileSize) {
+            do {
+                return try await transcribeSync(audioURL: audioURL, url: sync, settings: settings, apiKey: apiKey)
+            } catch let error as ProviderError {
+                guard Self.shouldFallBackFromSync(error) else { throw error }
+            }
+        }
         guard let uploadURL = URL(string: base + "/v2/upload") else { throw ProviderError.badURL }
 
         var upload = URLRequest(url: uploadURL)
@@ -583,7 +652,7 @@ struct AssemblyAITranscriptionProvider: TranscriptionProvider {
         guard let transcriptURL = URL(string: base + "/v2/transcript") else { throw ProviderError.badURL }
         var body: [String: Any] = [
             "audio_url": remoteURL,
-            "speech_models": [settings.model]
+            "speech_models": settings.model == "universal-3-5-pro" ? [settings.model, "universal-2"] : [settings.model]
         ]
         if let code = settings.language.apiCode {
             body["language_code"] = code
@@ -619,7 +688,7 @@ struct AssemblyAITranscriptionProvider: TranscriptionProvider {
                     detectedLanguage: statusJSON["language_code"] as? String,
                     duration: duration,
                     providerName: settings.provider.rawValue,
-                    modelName: settings.model
+                    modelName: statusJSON["speech_model_used"] as? String ?? settings.model
                 )
             }
             if status == "error" {
@@ -671,6 +740,17 @@ struct OpenRouterTranscriptionProvider: TranscriptionProvider {
 /// Base URL must be the regional host, e.g. https://eastus.api.cognitive.microsoft.com
 /// API key = Speech resource key.
 struct AzureSpeechTranscriptionProvider: TranscriptionProvider {
+    static func definition(settings: ProviderSettings) -> [String: Any] {
+        if settings.model.hasPrefix("mai-transcribe") {
+            // Azure documents case-sensitive canonical MAI model names.
+            let model = settings.model.replacingOccurrences(of: "mai-transcribe", with: "MAI-Transcribe")
+            var definition: [String: Any] = ["enhancedMode": ["enabled": true, "model": model]]
+            if settings.language != .auto { definition["locales"] = [settings.language.bcp47] }
+            return definition
+        }
+        return ["locales": [settings.language == .auto ? "en-US" : settings.language.bcp47]]
+    }
+
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
         guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
         let base = settings.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -678,10 +758,7 @@ struct AzureSpeechTranscriptionProvider: TranscriptionProvider {
             throw ProviderError.badURL
         }
 
-        let locale = settings.language == .auto ? "en-US" : settings.language.bcp47
-        let definition: [String: Any] = settings.model.hasPrefix("mai-transcribe")
-            ? ["enhancedMode": ["enabled": true, "model": settings.model]]
-            : ["locales": [locale]]
+        let definition = Self.definition(settings: settings)
         let definitionJSON = String(data: try JSONSerialization.data(withJSONObject: definition), encoding: .utf8) ?? "{\"locales\":[\"en-US\"]}"
 
         let form = try MultipartFormData()
@@ -709,7 +786,7 @@ struct AzureSpeechTranscriptionProvider: TranscriptionProvider {
                 if !joined.isEmpty {
                     return TranscriptionResult(
                         text: joined,
-                        detectedLanguage: locale,
+                        detectedLanguage: settings.language == .auto ? nil : settings.language.bcp47,
                         duration: (json["durationMilliseconds"] as? Double).map { $0 / 1000 },
                         providerName: settings.provider.rawValue,
                         modelName: settings.model
@@ -720,7 +797,7 @@ struct AzureSpeechTranscriptionProvider: TranscriptionProvider {
         }
         return TranscriptionResult(
             text: text,
-            detectedLanguage: locale,
+            detectedLanguage: settings.language == .auto ? nil : settings.language.bcp47,
             duration: (json["durationMilliseconds"] as? Double).map { $0 / 1000 },
             providerName: settings.provider.rawValue,
             modelName: settings.model
@@ -1290,7 +1367,7 @@ private extension Digest {
     var hex: String { map { String(format: "%02x", $0) }.joined() }
 }
 
-private func result(
+func result(
     _ text: String,
     _ settings: ProviderSettings,
     language: String? = nil,
@@ -1327,7 +1404,7 @@ func linear16PCM(fromWAV url: URL) throws -> Data {
     return data
 }
 
-private func audioDuration(from url: URL) -> TimeInterval? {
+func audioDuration(from url: URL) -> TimeInterval? {
     guard let file = try? AVAudioFile(forReading: url), file.fileFormat.sampleRate > 0 else {
         return nil
     }
@@ -1335,7 +1412,7 @@ private func audioDuration(from url: URL) -> TimeInterval? {
 }
 
 /// Shared session with bounded timeouts, no cross-origin redirects, and response size caps.
-private enum Network {
+enum Network {
     /// Refuse redirects that change host (prevents leaking API keys + POST body to a 3rd party).
     private final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         func urlSession(
@@ -1394,7 +1471,7 @@ private enum Network {
     }
 }
 
-private func sendData(_ request: URLRequest, bodyFile: URL? = nil) async throws -> Data {
+func sendData(_ request: URLRequest, bodyFile: URL? = nil) async throws -> Data {
     var request = request
     if request.timeoutInterval <= 0 || request.timeoutInterval > 90 {
         request.timeoutInterval = 60
@@ -1448,14 +1525,14 @@ private func sendData(_ request: URLRequest, bodyFile: URL? = nil) async throws 
     throw ProviderError.network("Request failed")
 }
 
-private func send(_ request: URLRequest, bodyFile: URL? = nil) async throws -> [String: Any] {
+func send(_ request: URLRequest, bodyFile: URL? = nil) async throws -> [String: Any] {
     let data = try await sendData(request, bodyFile: bodyFile)
     guard !data.isEmpty else { return [:] }
     let object = try JSONSerialization.jsonObject(with: data)
     return object as? [String: Any] ?? [:]
 }
 
-private func fetch(_ request: URLRequest, bodyFile: URL?) async throws -> (data: Data, response: HTTPURLResponse) {
+func fetch(_ request: URLRequest, bodyFile: URL?) async throws -> (data: Data, response: HTTPURLResponse) {
     if let bodyFile {
         let (data, response) = try await Network.session.upload(for: request, fromFile: bodyFile)
         guard data.count <= Network.maxResponseBytes else {

@@ -170,8 +170,7 @@ final class SettingsStore: ObservableObject {
 
     func providerSettings(for provider: SpeechProvider) -> ProviderSettings {
         let savedModel = defaults.string(forKey: Self.modelKey(provider))
-        let resolvedModel = savedModel.flatMap { provider.models.contains($0) ? $0 : nil }
-            ?? provider.models[0]
+        let resolvedModel = provider.resolvedModel(savedModel)
         let savedBaseURL = defaults.string(forKey: Self.baseURLKey(provider))
             ?? provider.defaultBaseURL
         let providerDefaults = SpeechProvider.allCases.map(\.defaultBaseURL)
@@ -289,7 +288,7 @@ final class SettingsStore: ObservableObject {
 
     private func normalizeModelAndBaseURL() {
         let savedModel = defaults.string(forKey: Self.modelKey(provider)) ?? model
-        model = provider.models.contains(savedModel) ? savedModel : provider.models[0]
+        model = provider.resolvedModel(savedModel)
         let savedBaseURL = defaults.string(forKey: Self.baseURLKey(provider)) ?? provider.defaultBaseURL
         let providerDefaults = SpeechProvider.allCases.map(\.defaultBaseURL)
         let candidate = savedBaseURL.isEmpty || (providerDefaults.contains(savedBaseURL) && savedBaseURL != provider.defaultBaseURL)

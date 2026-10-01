@@ -41,7 +41,7 @@ in place with Sparkle. Dictabar does not require a DMG or installer package.
 
 - **Works everywhere** — dictate into browsers, editors, messengers, terminals,
   documents, and any other app that accepts text.
-- **Local or cloud** — use on-device speech models or choose from 26 cloud and
+- **Local or cloud** — use on-device speech models or choose from 29 cloud and
   self-hosted providers.
 - **Bring your own key** — Dictabar does not proxy your audio through a
   Dictabar server.
@@ -86,7 +86,7 @@ repository and remain under the model publisher's license; see
 
 Supported providers include OpenAI, Groq, Deepgram, Mistral, Soniox, Gladia,
 Speechmatics, ElevenLabs, AssemblyAI, OpenRouter, Azure Speech, Google Cloud,
-Fireworks, Together, xAI, Nari Labs, Amazon Transcribe, Cloudflare Workers AI, and a custom
+Fireworks, Together, xAI, Nari Labs, Google Gemini, Reson8, StepFun, Amazon Transcribe, Cloudflare Workers AI, and a custom
 OpenAI-compatible endpoint.
 
 Nari Labs supports Qwen3-ASR Standard and Fast, with free models selected by
@@ -94,6 +94,12 @@ IDs ending in `:free`. Partner models require access from Nari Labs. Add your ke
 from [Nari Labs](https://app.narilabs.com/keys) in Settings → Providers.
 Dictabar sends the completed recording over a secure WebSocket and waits for all
 final transcript segments, including recordings longer than 36 seconds.
+
+Recent model options include GPT Transcribe, MAI-Transcribe-2, Gemini 3.5 Transcribe,
+Universal-3.5 Pro, Voxtral Mini Transcribe 2, Solaria-3, Melia 1, and StepAudio 3 ASR.
+Saved legacy model choices migrate to their supported replacements. Solaria-3 is
+optimized for English, French, German, Spanish, and Italian; StepAudio ASR supports
+Chinese and English; Reson8 covers ten European languages.
 
 Cloud providers receive the completed recording directly from Dictabar. Their
 pricing, retention, and data-processing terms apply.

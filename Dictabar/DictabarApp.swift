@@ -99,6 +99,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             appState.completePermissionsOnboarding()
         }
 
+        // Explicit visual test entry point; normal launches remain quiet.
+        if arguments.contains("--settings-smoke-test") {
+            showSettings()
+            return
+        }
+
         // First run: open Quick Start once (provider + key). Skip if already done.
         if !appState.quickStartCompleted {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
