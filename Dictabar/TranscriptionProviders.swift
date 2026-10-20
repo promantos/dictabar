@@ -293,7 +293,39 @@ struct GroqTranscriptionProvider: TranscriptionProvider {
 
 struct MistralTranscriptionProvider: TranscriptionProvider {
     func transcribe(audioURL: URL, settings: ProviderSettings, apiKey: String) async throws -> TranscriptionResult {
-        try await OpenAICompatibleTranscriptionProvider().transcribe(audioURL: audioURL, settings: settings, apiKey: apiKey)
+        let (request, form) = try Self.makeRequest(audioURL: audioURL, settings: settings, apiKey: apiKey)
+        return try Self.result(from: await send(request, bodyFile: form.fileURL), settings: settings)
+    }
+
+    static func makeRequest(audioURL: URL, settings: ProviderSettings, apiKey: String) throws -> (URLRequest, MultipartFormData) {
+        guard !apiKey.isEmpty else { throw ProviderError.missingAPIKey }
+        let base = settings.provider.sanitizedBaseURL(settings.baseURL)
+        guard let url = URL(string: base + "/audio/transcriptions") else { throw ProviderError.badURL }
+        let form = try MultipartFormData()
+        try form.addFile("file", url: audioURL, mimeType: "audio/wav")
+        try form.addField("model", settings.model)
+        if let language = settings.language.apiCode {
+            try form.addField("language", language)
+        } else if settings.model.hasPrefix("voxtral-mini-transcribe-") || settings.model.hasPrefix("voxtral-small-transcribe-") {
+            // Voxtral 3 otherwise returns null even after automatic detection.
+            try form.addField("return_language", "true")
+        }
+        try form.addField("response_format", "json")
+        try form.close()
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        try form.apply(to: &request)
+        return (request, form)
+    }
+
+    static func result(from json: [String: Any], settings: ProviderSettings) throws -> TranscriptionResult {
+        guard let text = json["text"] as? String, !text.isEmpty else { throw ProviderError.noTranscript }
+        let usage = json["usage"] as? [String: Any]
+        return TranscriptionResult(text: text,
+                                   detectedLanguage: OpenAITranscriptionProvider.detectedLanguage(json),
+                                   duration: (usage?["prompt_audio_seconds"] as? TimeInterval) ?? (json["duration"] as? TimeInterval),
+                                   providerName: settings.provider.rawValue, modelName: settings.model)
     }
 }
 
@@ -1214,6 +1246,18 @@ struct AmazonTranscribeProvider: TranscriptionProvider {
         upload.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
         upload.httpBody = audio
         signer.sign(&upload, service: "s3", body: audio)
+        defer {
+            Task.detached {
+                var delete = URLRequest(url: s3URL)
+                delete.httpMethod = "DELETE"
+                signer.sign(&delete, service: "s3", body: Data())
+                do {
+                    _ = try await sendData(delete)
+                } catch {
+                    DiagnosticsLogger.shared.log("amazon: remote audio cleanup failed \(error.localizedDescription)")
+                }
+            }
+        }
         _ = try await sendData(upload)
 
         let jobName = "dictabar-\(UUID().uuidString.lowercased())"
@@ -1236,14 +1280,6 @@ struct AmazonTranscribeProvider: TranscriptionProvider {
         signer.sign(&start, service: "transcribe", body: startData)
         _ = try await send(start)
 
-        defer {
-            Task {
-                var delete = URLRequest(url: s3URL)
-                delete.httpMethod = "DELETE"
-                signer.sign(&delete, service: "s3", body: Data())
-                _ = try? await sendData(delete)
-            }
-        }
 
         for _ in 0..<55 {
             try await Task.sleep(for: .seconds(1))
@@ -1414,7 +1450,107 @@ func audioDuration(from url: URL) -> TimeInterval? {
 /// Shared session with bounded timeouts, no cross-origin redirects, and response size caps.
 enum Network {
     /// Refuse redirects that change host (prevents leaking API keys + POST body to a 3rd party).
-    private final class RedirectGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private final class RedirectGuard: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+        private struct TaskKey: Hashable {
+            let session: ObjectIdentifier
+            let task: Int
+        }
+
+        private final class PendingResponse {
+            let continuation: CheckedContinuation<(Data, URLResponse), Error>
+            var response: URLResponse?
+            var data = Data()
+            var tooLarge = false
+            var cancelledByCaller = false
+
+            init(continuation: CheckedContinuation<(Data, URLResponse), Error>, cancelledByCaller: Bool) {
+                self.continuation = continuation
+                self.cancelledByCaller = cancelledByCaller
+            }
+        }
+
+        private let lock = NSLock()
+        private var pending: [TaskKey: PendingResponse] = [:]
+
+        func register(
+            in session: URLSession,
+            _ task: URLSessionDataTask,
+            continuation: CheckedContinuation<(Data, URLResponse), Error>
+        ) {
+            lock.lock()
+            pending[TaskKey(session: ObjectIdentifier(session), task: task.taskIdentifier)] = PendingResponse(
+                continuation: continuation,
+                cancelledByCaller: task.state == .canceling
+            )
+            lock.unlock()
+        }
+
+        func cancelByCaller(in session: URLSession, _ task: URLSessionTask) {
+            lock.lock()
+            if let item = pending[TaskKey(session: ObjectIdentifier(session), task: task.taskIdentifier)] {
+                item.cancelledByCaller = true
+            }
+            lock.unlock()
+            task.cancel()
+        }
+
+        func urlSession(
+            _ session: URLSession,
+            dataTask: URLSessionDataTask,
+            didReceive response: URLResponse,
+            completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+        ) {
+            lock.lock()
+            let key = TaskKey(session: ObjectIdentifier(session), task: dataTask.taskIdentifier)
+            if let item = pending[key] {
+                item.response = response
+                if response.expectedContentLength > Int64(Network.maxResponseBytes) {
+                    item.tooLarge = true
+                }
+                let tooLarge = item.tooLarge
+                lock.unlock()
+                completionHandler(tooLarge ? .cancel : .allow)
+            } else {
+                lock.unlock()
+                completionHandler(.cancel)
+            }
+        }
+
+        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+            lock.lock()
+            guard let item = pending[TaskKey(session: ObjectIdentifier(session), task: dataTask.taskIdentifier)] else {
+                lock.unlock()
+                dataTask.cancel()
+                return
+            }
+            if item.tooLarge || data.count > Network.maxResponseBytes - item.data.count {
+                item.tooLarge = true
+                lock.unlock()
+                dataTask.cancel()
+                return
+            }
+            item.data.append(data)
+            lock.unlock()
+        }
+
+        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+            lock.lock()
+            let item = pending.removeValue(forKey: TaskKey(session: ObjectIdentifier(session), task: task.taskIdentifier))
+            lock.unlock()
+            guard let item else { return }
+            if item.tooLarge {
+                item.continuation.resume(throwing: ProviderError.http(413, "Provider response too large."))
+            } else if item.cancelledByCaller {
+                item.continuation.resume(throwing: CancellationError())
+            } else if let error {
+                item.continuation.resume(throwing: error)
+            } else if let response = item.response {
+                item.continuation.resume(returning: (item.data, response))
+            } else {
+                item.continuation.resume(throwing: ProviderError.network("Invalid HTTP response"))
+            }
+        }
+
         func urlSession(
             _ session: URLSession,
             task: URLSessionTask,
@@ -1444,13 +1580,39 @@ enum Network {
 
     static let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
+        return makeSession(configuration: config)
+    }()
+
+    static func makeSession(configuration config: URLSessionConfiguration) -> URLSession {
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 90
         config.waitsForConnectivity = true
         config.httpShouldSetCookies = false
         config.httpCookieAcceptPolicy = .never
         return URLSession(configuration: config, delegate: redirectGuard, delegateQueue: nil)
-    }()
+    }
+
+    static func boundedTransfer(
+        _ request: URLRequest,
+        bodyFile: URL?,
+        using session: URLSession = Network.session
+    ) async throws -> (Data, URLResponse) {
+        try Task.checkCancellation()
+        let task: URLSessionDataTask
+        if let bodyFile {
+            task = session.uploadTask(with: request, fromFile: bodyFile)
+        } else {
+            task = session.dataTask(with: request)
+        }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                redirectGuard.register(in: session, task, continuation: continuation)
+                task.resume()
+            }
+        } onCancel: {
+            redirectGuard.cancelByCaller(in: session, task)
+        }
+    }
 
     static let maxResponseBytes = 2 * 1024 * 1024
 
@@ -1532,24 +1694,14 @@ func send(_ request: URLRequest, bodyFile: URL? = nil) async throws -> [String: 
     return object as? [String: Any] ?? [:]
 }
 
-func fetch(_ request: URLRequest, bodyFile: URL?) async throws -> (data: Data, response: HTTPURLResponse) {
-    if let bodyFile {
-        let (data, response) = try await Network.session.upload(for: request, fromFile: bodyFile)
-        guard data.count <= Network.maxResponseBytes else {
-            throw ProviderError.http(413, "Provider response too large.")
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw ProviderError.network("Invalid HTTP response")
-        }
-        return (data, http)
-    }
-
-    let (data, response) = try await Network.session.data(for: request)
+func fetch(
+    _ request: URLRequest,
+    bodyFile: URL?,
+    using session: URLSession = Network.session
+) async throws -> (data: Data, response: HTTPURLResponse) {
+    let (data, response) = try await Network.boundedTransfer(request, bodyFile: bodyFile, using: session)
     guard let http = response as? HTTPURLResponse else {
         throw ProviderError.network("Invalid HTTP response")
-    }
-    guard data.count <= Network.maxResponseBytes else {
-        throw ProviderError.http(413, "Provider response too large.")
     }
     return (data, http)
 }

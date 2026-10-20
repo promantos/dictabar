@@ -1,6 +1,6 @@
 # Dictabar privacy
 
-Last updated: July 29, 2026.
+Last updated: October 1, 2026.
 
 Dictabar is a native macOS application. It has no Dictabar account, analytics,
 advertising, or Dictabar-operated speech server.
@@ -39,6 +39,15 @@ audio, and diagnostic files created there use mode `0600`.
 History can be disabled or cleared in Settings. API keys can be removed by
 clearing a provider key or resetting Dictabar. Downloaded local models can be
 removed from the Local Models screen.
+
+When Restore previous clipboard is enabled, automatic paste marks dictation as
+transient, concealed and automatically generated before publishing its text.
+Clipboard history applications that honor these markers skip it. The original
+clipboard is restored on success, failure or cancellation unless another copy
+has replaced it. Complex or oversized clipboard contents are preserved by using
+typing instead. Dictabar cannot erase entries already saved by another app or
+force an app that ignores these markers to stop recording clipboard contents.
+Explicit Copy actions and copy-only dictation intentionally put text on the clipboard.
 
 ## Network connections
 

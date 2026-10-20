@@ -74,7 +74,11 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
             // Flux is realtime-only; Dictabar intentionally exposes file-capable Nova.
             modelList(["nova-3"], LanguageCatalog.deepgram)
         case .mistral:
-            modelList(["voxtral-mini-2602", "voxtral-small-latest"], LanguageCatalog.voxtral)
+            // Voxtral 3 file models are separate from the legacy audio-chat aliases.
+            // The docs report 50 languages without enumerating all their codes.
+            [SpeechModelInfo(id: "voxtral-mini-transcribe-3", languageCodes: [], note: "Public Preview · Voxtral 3", reportedLanguageCount: "50"),
+             SpeechModelInfo(id: "voxtral-small-transcribe-3", languageCodes: [], note: "Public Preview · Voxtral 3", reportedLanguageCount: "50"),
+             SpeechModelInfo(id: "voxtral-mini-2602", languageCodes: LanguageCatalog.voxtral)]
         case .soniox:
             modelList(["stt-async-v5"], LanguageCatalog.soniox)
         case .gladia:
@@ -425,6 +429,11 @@ enum SpeechProvider: String, CaseIterable, Identifiable {
         switch (self, candidate) {
         case (.assemblyAI, "universal-3-pro"): candidate = "universal-3-5-pro"
         case (.mistral, "voxtral-mini-latest"): candidate = "voxtral-mini-2602"
+        case (.mistral, "voxtral-mini-transcribe-3-0"), (.mistral, "voxtral-mini-transcribe-latest"):
+            candidate = "voxtral-mini-transcribe-3"
+        case (.mistral, "voxtral-small-latest"), (.mistral, "voxtral-small-2507"),
+             (.mistral, "voxtral-small-transcribe-3-0"), (.mistral, "voxtral-small-transcribe-latest"):
+            candidate = "voxtral-small-transcribe-3"
         case (.azureSpeech, "mai-transcribe-1"): candidate = "mai-transcribe-2"
         case (.googleCloud, "chirp_2"): candidate = "latest_long"
         default: break

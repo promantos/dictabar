@@ -4,12 +4,7 @@ import Foundation
 @MainActor
 enum TextInsertionService {
     /// Tracks an in-flight paste so cancel can still restore the previous clipboard.
-    private static var pendingRestore: PendingClipboardRestore?
-
-    private struct PendingClipboardRestore {
-        let transcript: String
-        let backup: PasteboardBackup
-    }
+    private static var pendingRestore: ClipboardPasteTransaction?
 
     private struct AccessibilityTextTarget {
         let element: AXUIElement
@@ -45,15 +40,20 @@ enum TextInsertionService {
     static func restoreClipboardIfNeeded() {
         guard let pending = pendingRestore else { return }
         pendingRestore = nil
-        let pb = NSPasteboard.general
-        removeTranscriptAndRestore(pb: pb, transcript: pending.transcript, backup: pending.backup, pass: 0)
-        DiagnosticsLogger.shared.log("clipboard: restored after cancel")
+        pending.restoreIfOwned()
     }
 
     static func copy(_ text: String) {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+    }
+
+    /// Exercises the actual clipboard fallback with harmless test text, without
+    /// recording or using provider credentials. Used by the release UI check.
+    static func runClipboardSmokeTest(_ text: String) async throws {
+        guard PermissionManager.hasAccessibilityAccess() else { throw InsertionError.missingAccessibility }
+        try await paste(text, restoreClipboard: true)
     }
 
     // MARK: - Paste
@@ -66,133 +66,36 @@ enum TextInsertionService {
     private static func paste(_ text: String, restoreClipboard: Bool) async throws {
         let pb = NSPasteboard.general
         let target = accessibilityTextTarget(replacingWith: text)
-
-        // --- snapshot OLD clipboard (before we touch it) ---
-        let backup = PasteboardBackup.capture(from: pb)
-        DiagnosticsLogger.shared.log(
-            "clipboard: backup types=\(backup.stringValue != nil ? "str" : "-") items=\(backup.items.count) empty=\(backup.isEmpty)"
-        )
-
-        // Register restore target BEFORE mutating pasteboard so cancel is safe.
+        let transaction: ClipboardPasteTransaction?
         if restoreClipboard {
-            pendingRestore = PendingClipboardRestore(transcript: text, backup: backup)
-        }
-
-        // --- put transcript + paste ---
-        pb.clearContents()
-        pb.setString(text, forType: .string)
-        postCommandV()
-
-        guard restoreClipboard else {
-            DiagnosticsLogger.shared.log("clipboard: keep transcript on pasteboard")
-            return
-        }
-
-        // Always restore even if the task is cancelled mid-sleep.
-        var restoreOldClipboard = true
-        defer {
-            if pendingRestore != nil {
-                if restoreOldClipboard {
-                    removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: 1)
-                } else {
-                    // Preserve the transcript for manual paste when AX proves the target
-                    // did not change; restoring the old clipboard here would lose it.
-                    DiagnosticsLogger.shared.log("clipboard: paste not verified; transcript left on pasteboard")
-                }
-                pendingRestore = nil
-            }
-        }
-
-        // Give the front app time to read pasteboard for ⌘V.
-        // Use non-throwing sleep so CancellationError does not skip defer restore logic incorrectly;
-        // defer still runs on cancel, but we also restore immediately after a cancelled wait.
-        let slept = await sleepAllowingCancel(milliseconds: 250)
-        if !slept {
-            // Cancelled during wait — restore now (defer also covers this).
-            DiagnosticsLogger.shared.log("clipboard: cancelled during paste wait; restoring")
-            return
-        }
-
-        if let target, !accessibilityTargetMatches(target) {
-            restoreOldClipboard = false
-            throw InsertionError.pasteNotVerified
-        }
-
-        // --- CRITICAL: remove transcript, restore old ---
-        removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: 1)
-        // Mark first restore done; scrub loop may re-apply if target app re-writes pasteboard.
-        // Keep pendingRestore until scrub finishes so cancel mid-scrub still restores.
-
-        // One bounded follow-up catches apps that read/rewrite pasteboard asynchronously.
-        for pass in 2...3 {
-            let ok = await sleepAllowingCancel(milliseconds: 150)
-            if !ok {
-                DiagnosticsLogger.shared.log("clipboard: cancelled during scrub; restoring")
-                removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: pass)
-                pendingRestore = nil
+            // Complex/large clipboard contents cannot be restored losslessly with
+            // setData. Insert without touching the clipboard in that case.
+            guard let captured = ClipboardPasteTransaction.begin(text: text, pasteboard: pb) else {
+                try await type(text)
                 return
             }
-            let current = pb.string(forType: .string) ?? ""
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            // Exact match only — contains() would clobber a legitimate new clipboard
-            // that happens to include the transcript as a substring.
-            if current == text || (!trimmed.isEmpty && current == trimmed) {
-                removeTranscriptAndRestore(pb: pb, transcript: text, backup: backup, pass: pass)
-            } else {
-                // Do NOT log clipboard contents (may be passwords/tokens).
-                DiagnosticsLogger.shared.log(
-                    "clipboard: scrub OK after pass \(pass - 1); len=\(current.count)"
-                )
-                break
-            }
-        }
-        pendingRestore = nil
-    }
-
-    /// Sleep that returns false on cancellation instead of throwing.
-    private static func sleepAllowingCancel(milliseconds: UInt64) async -> Bool {
-        do {
-            try await Task.sleep(for: .milliseconds(milliseconds))
-            return true
-        } catch {
-            return false
-        }
-    }
-
-    /// Deletes whatever is on the pasteboard (including transcript) and writes backup only.
-    private static func removeTranscriptAndRestore(
-        pb: NSPasteboard,
-        transcript: String,
-        backup: PasteboardBackup,
-        pass: Int
-    ) {
-        // 1) Hard wipe — this is the "delete transcript" step.
-        pb.clearContents()
-        pb.declareTypes([], owner: nil)
-        // clearContents again after declareTypes for stubborn pasteboard state
-        pb.clearContents()
-
-        // 2) Put ONLY the previous clipboard back.
-        if backup.isEmpty {
-            // Leave empty — transcript is gone.
-            DiagnosticsLogger.shared.log("clipboard: pass \(pass) wiped; left empty")
-            return
-        }
-
-        backup.restore(to: pb)
-
-        // 3) Verify transcript is not still there.
-        if let now = pb.string(forType: .string), now == transcript {
-            pb.clearContents()
-            pb.declareTypes([], owner: nil)
-            // Try string-only restore as last resort.
-            if let s = backup.stringValue, s != transcript {
-                pb.setString(s, forType: .string)
-            }
-            DiagnosticsLogger.shared.log("clipboard: pass \(pass) emergency wipe+string restore")
+            transaction = captured
+            pendingRestore = captured
         } else {
-            DiagnosticsLogger.shared.log("clipboard: pass \(pass) restored backup")
+            transaction = nil
+            copy(text)
         }
+        defer {
+            if let transaction, pendingRestore === transaction {
+                transaction.restoreIfOwned()
+                pendingRestore = nil
+            }
+        }
+        postCommandV()
+        guard let transaction else { return }
+        try await Task.sleep(for: .milliseconds(250))
+        try Task.checkCancellation()
+        // Restore on failure too: Copy Last Transcript is an explicit user action
+        // when manual insertion is needed, not a reason to leave private text behind.
+        if let target, !accessibilityTargetMatches(target) {
+            throw InsertionError.pasteNotVerified
+        }
+        transaction.restoreIfOwned()
     }
 
     private static func postCommandV() {
@@ -203,66 +106,6 @@ enum TextInsertionService {
         keyUp?.flags = .maskCommand
         keyDown?.post(tap: .cghidEventTap)
         keyUp?.post(tap: .cghidEventTap)
-    }
-
-    // MARK: - Backup
-
-    private struct PasteboardBackup {
-        var stringValue: String?
-        var items: [[String: Data]]
-
-        var isEmpty: Bool {
-            items.isEmpty && (stringValue == nil || stringValue?.isEmpty == true)
-        }
-
-        static func capture(from pb: NSPasteboard) -> PasteboardBackup {
-            var items: [[String: Data]] = []
-            var remainingBytes = 1_000_000
-            // ponytail: writeObjects previously crashed this app, so safely preserve
-            // one bounded primary item; AX insertion bypasses the clipboard entirely.
-            for item in (pb.pasteboardItems ?? []).prefix(1) {
-                var map: [String: Data] = [:]
-                for type in item.types {
-                    if let data = item.data(forType: type), data.count <= remainingBytes {
-                        map[type.rawValue] = data
-                        remainingBytes -= data.count
-                    }
-                }
-                if !map.isEmpty { items.append(map) }
-            }
-            let str = pb.string(forType: .string)
-            if items.isEmpty, let str, let data = str.data(using: .utf8) {
-                items.append([NSPasteboard.PasteboardType.string.rawValue: data])
-            }
-            return PasteboardBackup(stringValue: str, items: items)
-        }
-
-        func restore(to pb: NSPasteboard) {
-            // Restore via setString/setData only (historical AppKit crash path avoided).
-            // Restore primary string when available; otherwise first item types via setData.
-            if let stringValue, !stringValue.isEmpty {
-                pb.clearContents()
-                pb.setString(stringValue, forType: .string)
-                // Also restore non-string types from the first item when present.
-                if let first = items.first {
-                    for (type, data) in first where type != NSPasteboard.PasteboardType.string.rawValue {
-                        _ = pb.setData(data, forType: NSPasteboard.PasteboardType(type))
-                    }
-                }
-                return
-            }
-            if let first = items.first {
-                pb.clearContents()
-                var wrote = false
-                for (type, data) in first {
-                    if pb.setData(data, forType: NSPasteboard.PasteboardType(type)) {
-                        wrote = true
-                    }
-                }
-                if wrote { return }
-            }
-            pb.clearContents()
-        }
     }
 
     // MARK: - Typing
@@ -366,6 +209,66 @@ enum TextInsertionService {
 
     private static func accessibilityTargetMatches(_ target: AccessibilityTextTarget) -> Bool {
         accessibilityValue(of: target.element) == target.expectedValue
+    }
+}
+
+/// A private, temporary paste with ownership-aware, lossless restoration.
+/// Clipboard historians supporting NSPasteboard.org markers skip these values.
+@MainActor
+final class ClipboardPasteTransaction {
+    static let transient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+    static let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+    static let generated = NSPasteboard.PasteboardType("org.nspasteboard.AutoGeneratedType")
+    static let ownerType = NSPasteboard.PasteboardType("app.dictabar.paste-owner")
+    private let pasteboard: NSPasteboard
+    private let backup: [NSPasteboard.PasteboardType: Data]
+    private let owner: String
+    private let changeCount: Int
+    private var finished = false
+
+    private init(pasteboard: NSPasteboard, backup: [NSPasteboard.PasteboardType: Data], owner: String) {
+        self.pasteboard = pasteboard
+        self.backup = backup
+        self.owner = owner
+        self.changeCount = pasteboard.changeCount
+    }
+
+    /// Returns nil before mutation if the complete clipboard cannot be preserved.
+    static func begin(text: String, pasteboard pb: NSPasteboard) -> ClipboardPasteTransaction? {
+        let before = pb.changeCount
+        let items = pb.pasteboardItems ?? []
+        guard items.count <= 1 else { return nil }
+        var backup: [NSPasteboard.PasteboardType: Data] = [:]
+        var bytes = 0
+        for type in pb.types ?? [] {
+            guard let data = pb.data(forType: type), data.count <= 8_000_000 - bytes else { return nil }
+            backup[type] = data
+            bytes += data.count
+        }
+        guard pb.changeCount == before else { return nil }
+        let owner = UUID().uuidString
+        // Advertise privacy markers before publishing any transcript bytes.
+        pb.declareTypes([.string, transient, concealed, generated, ownerType], owner: nil)
+        for type in [transient, concealed, generated] {
+            pb.setData(Data(), forType: type)
+        }
+        pb.setString(owner, forType: ownerType)
+        guard pb.setString(text, forType: .string) else {
+            pb.declareTypes(Array(backup.keys), owner: nil)
+            for (type, data) in backup { pb.setData(data, forType: type) }
+            return nil
+        }
+        return ClipboardPasteTransaction(pasteboard: pb, backup: backup, owner: owner)
+    }
+
+    func restoreIfOwned() {
+        guard !finished else { return }
+        finished = true
+        // Another copy belongs to the user, even if it has the same text.
+        guard pasteboard.changeCount == changeCount,
+              pasteboard.string(forType: Self.ownerType) == owner else { return }
+        pasteboard.declareTypes(Array(backup.keys), owner: nil)
+        for (type, data) in backup { pasteboard.setData(data, forType: type) }
     }
 }
 

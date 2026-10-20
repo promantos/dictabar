@@ -7,6 +7,8 @@ import SwiftUI
 enum DictabarApp {
     @MainActor
     static func main() {
+        if LocalInferenceWorker.runIfRequested() { return }
+
         let app = NSApplication.shared
         let delegate = AppDelegate()
         app.delegate = delegate
@@ -54,6 +56,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var quickStartChromeCounted = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let smokeArguments = ProcessInfo.processInfo.arguments
+        if let index = smokeArguments.firstIndex(of: "--clipboard-smoke-test"),
+           smokeArguments.indices.contains(index + 1) {
+            NSApp.setActivationPolicy(.accessory)
+            let text = smokeArguments[index + 1]
+            Task { @MainActor in
+                do {
+                    try await TextInsertionService.runClipboardSmokeTest(text)
+                    print("clipboard-smoke-test: ok")
+                    fflush(stdout)
+                    Darwin.exit(EXIT_SUCCESS)
+                } catch {
+                    print("clipboard-smoke-test: failed \(error.localizedDescription)")
+                    fflush(stdout)
+                    Darwin.exit(EXIT_FAILURE)
+                }
+            }
+            return
+        }
         let others = NSRunningApplication.runningApplications(
             withBundleIdentifier: Bundle.main.bundleIdentifier ?? "app.dictabar.Dictabar"
         ).filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
@@ -203,6 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             dictationController.cancel()
         }
+        LocalModelRuntime.stopWorkerProcessOnExit()
         return .terminateNow
     }
 
@@ -241,8 +263,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .store(in: &cancellables)
 
         settingsStore.$showMenuBarIcon
-            .sink { [weak self] _ in
-                self?.applyMenuBarIconVisibility()
+            .sink { [weak self] shouldShow in
+                self?.applyMenuBarIconVisibility(shouldShow)
             }
             .store(in: &cancellables)
 
@@ -304,8 +326,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApp.mainMenu = mainMenu
     }
 
-    private func applyMenuBarIconVisibility() {
-        if settingsStore.showMenuBarIcon {
+    private func applyMenuBarIconVisibility(_ shouldShow: Bool? = nil) {
+        if shouldShow ?? settingsStore.showMenuBarIcon {
             if statusItem == nil { setupMenuBar() }
             statusItem?.isVisible = true
         } else {

@@ -108,7 +108,11 @@ final class OverlayWindowController {
         hideTask?.cancel()
         hideTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.4))
-            await MainActor.run { self?.hide() }
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard !Task.isCancelled else { return }
+                self?.hide()
+            }
         }
     }
 
